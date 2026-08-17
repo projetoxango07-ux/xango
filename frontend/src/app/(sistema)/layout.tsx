@@ -7,11 +7,11 @@ export default function SistemaLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
-      <Header />
+    <div className="flex min-h-screen bg-xango-background text-xango-text">
+      <Sidebar />
 
-      <div className="flex min-h-[calc(100vh-4rem)]">
-        <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Header />
 
         <main className="flex-1 p-8">
           {children}

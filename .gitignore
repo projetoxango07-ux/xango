@@ -1,0 +1,52 @@
+# ==============================
+# DIGNA CONECT / XANGO
+# ==============================
+
+# Dependências
+node_modules/
+**/node_modules/
+
+# Variáveis de ambiente e segredos
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Next.js
+.next/
+**/.next/
+out/
+
+# Prisma gerado
+generated/
+**/generated/
+
+# Builds
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# Temporários
+*.tmp
+*.temp
+# Ferramentas locais do backend
+backend/.agents/
+backend/.claude/
+backend/.windsurf/
+backend/skills-lock.json

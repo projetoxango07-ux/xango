@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: xango-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: xango
+      POSTGRES_PASSWORD: xango_dev_2026
+      POSTGRES_DB: xango
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - xango_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  xango_postgres_data:

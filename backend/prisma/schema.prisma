@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum StatusAtendimento {
+  EM_ANDAMENTO
+  AGUARDANDO_PAGAMENTO
+  PARCIALMENTE_PAGO
+  CONCLUIDO
+  CANCELADO
+}
+
+enum StatusGuia {
+  RASCUNHO
+  AGUARDANDO_PAGAMENTO
+  PARCIALMENTE_PAGA
+  PAGA
+  ESTORNO_PENDENTE
+  CANCELADA
+}
+
+enum StatusItemGuia {
+  ATIVO
+  CANCELADO
+  REALIZADO
+}
+
+enum TipoAgendamento {
+  HORARIO
+  ORDEM_CHEGADA
+}
+
+enum FormaPagamento {
+  PIX
+  DINHEIRO
+  CARTAO_CREDITO
+  CARTAO_DEBITO
+  TRANSFERENCIA
+  OUTRO
+}
+
+enum StatusRepasse {
+  DISPONIVEL
+  SOLICITADO
+  EM_ANALISE
+  APROVADO
+  PAGO
+  RECUSADO
+}
+
+model Empresa {
+  id                  Int        @id @default(autoincrement())
+  nome                String
+  documento           String?    @unique
+  percentualBeneficio Decimal?   @db.Decimal(5, 2)
+  ativo               Boolean    @default(true)
+
+  pacientes           Paciente[]
+
+  criadoEm            DateTime   @default(now())
+  atualizadoEm        DateTime   @updatedAt
+}
+
+model Paciente {
+  id             Int           @id @default(autoincrement())
+  nome           String
+  cpf            String        @unique
+  telefone       String
+  email          String?
+  dataNascimento DateTime?
+
+  empresaId      Int?
+  empresa        Empresa?      @relation(fields: [empresaId], references: [id])
+
+  beneficioAtivo Boolean       @default(false)
+
+  atendimentos   Atendimento[]
+
+  criadoEm       DateTime      @default(now())
+  atualizadoEm   DateTime      @updatedAt
+}
+
+model Clinica {
+  id             Int           @id @default(autoincrement())
+  nome           String
+  documento      String?       @unique
+  telefone       String?
+  email          String?
+  endereco       String?
+  ativo          Boolean       @default(true)
+
+  guias          Guia[]
+  precos         PrecoProcedimentoClinica[]
+  repasses       Repasse[]
+
+  criadoEm       DateTime      @default(now())
+  atualizadoEm   DateTime      @updatedAt
+}
+
+model Procedimento {
+  id             Int           @id @default(autoincrement())
+  nome           String
+  categoria      String?
+  preparo        String?
+  ativo          Boolean       @default(true)
+
+  precos         PrecoProcedimentoClinica[]
+  itensGuia      ItemGuia[]
+
+  criadoEm       DateTime      @default(now())
+  atualizadoEm   DateTime      @updatedAt
+}
+
+model PrecoProcedimentoClinica {
+  id               Int           @id @default(autoincrement())
+
+  clinicaId        Int
+  clinica          Clinica       @relation(fields: [clinicaId], references: [id])
+
+  procedimentoId   Int
+  procedimento     Procedimento  @relation(fields: [procedimentoId], references: [id])
+
+  valorPaciente    Decimal       @db.Decimal(10, 2)
+  valorRepasse     Decimal       @db.Decimal(10, 2)
+
+  ativo            Boolean       @default(true)
+
+  criadoEm         DateTime      @default(now())
+  atualizadoEm     DateTime      @updatedAt
+
+  @@unique([clinicaId, procedimentoId])
+}
+
+model Atendimento {
+  id               Int               @id @default(autoincrement())
+
+  pacienteId       Int
+  paciente         Paciente          @relation(fields: [pacienteId], references: [id])
+
+  status           StatusAtendimento @default(EM_ANDAMENTO)
+  etapaAtual       Int               @default(1)
+
+  guias            Guia[]
+
+  criadoEm         DateTime          @default(now())
+  atualizadoEm     DateTime          @updatedAt
+}
+
+model Guia {
+  id                   Int          @id @default(autoincrement())
+
+  atendimentoId        Int
+  atendimento          Atendimento  @relation(fields: [atendimentoId], references: [id])
+
+  clinicaId            Int
+  clinica              Clinica      @relation(fields: [clinicaId], references: [id])
+
+  status               StatusGuia   @default(RASCUNHO)
+
+  subtotal             Decimal      @default(0) @db.Decimal(10, 2)
+  desconto             Decimal      @default(0) @db.Decimal(10, 2)
+  beneficio            Decimal      @default(0) @db.Decimal(10, 2)
+  valorFinal           Decimal      @default(0) @db.Decimal(10, 2)
+
+  itens                 ItemGuia[]
+  pagamentos            Pagamento[]
+  estornos              Estorno[]
+  repasses              RepasseItem[]
+
+  criadoEm              DateTime     @default(now())
+  atualizadoEm          DateTime     @updatedAt
+}
+
+model ItemGuia {
+  id                  Int               @id @default(autoincrement())
+
+  guiaId              Int
+  guia                Guia              @relation(fields: [guiaId], references: [id])
+
+  procedimentoId      Int
+  procedimento        Procedimento      @relation(fields: [procedimentoId], references: [id])
+
+  status              StatusItemGuia    @default(ATIVO)
+
+  valorPaciente       Decimal           @db.Decimal(10, 2)
+  valorRepasse        Decimal           @db.Decimal(10, 2)
+
+  tipoAgendamento     TipoAgendamento?
+  dataAgendamento     DateTime?
+  horarioAgendamento  String?
+
+  canceladoEm         DateTime?
+  motivoCancelamento  String?
+
+  criadoEm            DateTime          @default(now())
+  atualizadoEm        DateTime          @updatedAt
+}
+
+model Pagamento {
+  id              Int              @id @default(autoincrement())
+
+  guiaId          Int
+  guia            Guia             @relation(fields: [guiaId], references: [id])
+
+  valor           Decimal          @db.Decimal(10, 2)
+  forma           FormaPagamento
+
+  observacao      String?
+
+  criadoEm        DateTime         @default(now())
+}
+
+model Estorno {
+  id              Int              @id @default(autoincrement())
+
+  guiaId          Int
+  guia            Guia             @relation(fields: [guiaId], references: [id])
+
+  valor           Decimal          @db.Decimal(10, 2)
+  forma           FormaPagamento
+  motivo          String?
+
+  criadoEm        DateTime         @default(now())
+}
+
+model Repasse {
+  id              Int             @id @default(autoincrement())
+
+  clinicaId       Int
+  clinica         Clinica         @relation(fields: [clinicaId], references: [id])
+
+  status          StatusRepasse   @default(SOLICITADO)
+
+  valorTotal      Decimal         @default(0) @db.Decimal(10, 2)
+
+  solicitadoEm    DateTime        @default(now())
+  pagoEm          DateTime?
+
+  itens           RepasseItem[]
+
+  criadoEm        DateTime        @default(now())
+  atualizadoEm    DateTime        @updatedAt
+}
+
+model RepasseItem {
+  id              Int          @id @default(autoincrement())
+
+  repasseId       Int
+  repasse         Repasse      @relation(fields: [repasseId], references: [id])
+
+  guiaId          Int
+  guia            Guia         @relation(fields: [guiaId], references: [id])
+
+  valor           Decimal      @db.Decimal(10, 2)
+
+  criadoEm        DateTime     @default(now())
+
+  @@unique([repasseId, guiaId])
+}
