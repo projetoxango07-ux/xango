@@ -494,13 +494,6 @@ const guias = useMemo(() => {
 
 
   async function salvarAtendimentoParaDepois() {
-    if (atendimentoId) {
-      alert(
-        "O atendimento existente foi carregado. Na próxima etapa vamos ligar a atualização ao banco sem criar um atendimento duplicado."
-      );
-      return;
-    }
-
     if (!pacienteSelecionado) {
       alert("Selecione um paciente antes de salvar o atendimento.");
       return;
@@ -597,17 +590,21 @@ const guias = useMemo(() => {
         };
       });
 
-      const resposta = await fetch("http://localhost:3333/atendimentos", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          pacienteId: pacienteSelecionado.id,
-          etapaAtual: etapaAtual + 1,
-          guias: guiasParaSalvar,
-        }),
-      });
+        const url = atendimentoId
+          ? `http://localhost:3333/atendimentos/${atendimentoId}`
+          : "http://localhost:3333/atendimentos";
+
+        const resposta = await fetch(url, {
+          method: atendimentoId ? "PUT" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            pacienteId: pacienteSelecionado.id,
+            etapaAtual: etapaAtual + 1,
+            guias: guiasParaSalvar,
+          }),
+        });
 
       const dados = await resposta.json();
 
@@ -618,7 +615,12 @@ const guias = useMemo(() => {
 
       localStorage.removeItem("digna-conect-atendimento-rascunho");
 
-      alert(`Atendimento #${dados.id} salvo com sucesso.`);
+      alert(
+        atendimentoId
+          ? `Atendimento #${dados.id} atualizado com sucesso.`
+          : `Atendimento #${dados.id} salvo com sucesso.`
+      );
+
       router.push("/atendimentos");
     } catch (erro) {
       console.error("Erro ao salvar atendimento:", erro);
