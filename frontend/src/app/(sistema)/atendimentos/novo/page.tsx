@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const etapas = [
   "Paciente",
@@ -10,103 +11,89 @@ const etapas = [
   "Revisão",
 ];
 
-const pacientes = [
-  {
-    id: 1,
-    nome: "João Silva",
-    cpf: "123.456.789-00",
-    telefone: "(13) 99999-1111",
-    empresa: "Empresa Parceira XYZ",
-    beneficioAtivo: true,
-    beneficioNome: "Convênio empresarial",
-    beneficioPercentual: 15,
-  },
-  {
-    id: 2,
-    nome: "Maria Oliveira",
-    cpf: "987.654.321-00",
-    telefone: "(13) 99999-2222",
-    empresa: "",
-    beneficioAtivo: false,
-    beneficioNome: "",
-    beneficioPercentual: 0,
-  },
-  {
-    id: 3,
-    nome: "Carlos Souza",
-    cpf: "456.789.123-00",
-    telefone: "(13) 99999-3333",
-  },
-];
+type EmpresaApi = {
+  id: number;
+  nome: string;
+  percentualBeneficio: string | number | null;
+};
 
-const procedimentos = [
-  {
-    id: 1,
-    nome: "Holter 24h",
-    categoria: "Cardiologia",
-    valor: 120,
-    repasse: 80,
-  },
-  {
-    id: 2,
-    nome: "MAPA 24h",
-    categoria: "Cardiologia",
-    valor: 110,
-    repasse: 75,
-  },
-  {
-    id: 3,
-    nome: "Eletrocardiograma",
-    categoria: "Cardiologia",
-    valor: 50,
-    repasse: 45,
-  },
-  {
-    id: 4,
-    nome: "Ultrassom de Abdome Total",
-    categoria: "Ultrassonografia",
-    valor: 150,
-    repasse: 100,
-  },
-  {
-    id: 5,
-    nome: "EEG",
-    categoria: "Neurologia",
-    valor: 130,
-    repasse: 90,
-  },
-  {
-    id: 6,
-    nome: "Espirometria",
-    categoria: "Pneumologia",
-    valor: 80,
-    repasse: 50,
-  },
-];
+type PacienteApi = {
+  id: number;
+  nome: string;
+  cpf: string;
+  telefone: string;
+  email: string | null;
+  dataNascimento: string | null;
+  beneficioAtivo: boolean;
+  empresa: EmpresaApi | null;
+};
 
-const clinicas = [
-  {
-    id: 1,
-    nome: "Clínica Alfa",
-    procedimentos: [1, 2, 3, 6],
-  },
-  {
-    id: 2,
-    nome: "Clínica Beta",
-    procedimentos: [3, 4],
-  },
-  {
-    id: 3,
-    nome: "Clínica Gama",
-    procedimentos: [1, 2, 5],
-  },
-];
+type ClinicaApi = {
+  id: number;
+  nome: string;
+  precos: {
+    procedimentoId: number;
+    valorPaciente: string | number;
+    valorRepasse: string | number;
+    procedimento: {
+      id: number;
+      nome: string;
+      categoria: string | null;
+    };
+  }[];
+};
+
+type ProcedimentoApi = {
+  id: number;
+  nome: string;
+  categoria: string | null;
+  precos: {
+    clinicaId: number;
+    valorPaciente: string | number;
+    valorRepasse: string | number;
+  }[];
+};
+
+type Paciente = {
+  id: number;
+  nome: string;
+  cpf: string;
+  telefone: string;
+  email?: string;
+  dataNascimento?: string;
+  empresa?: string;
+  beneficioAtivo: boolean;
+  beneficioNome?: string;
+  beneficioPercentual: number;
+};
+
+type Procedimento = {
+  id: number;
+  nome: string;
+  categoria: string;
+  valor: number;
+  repasse: number;
+};
+
+type Clinica = {
+  id: number;
+  nome: string;
+  procedimentos: number[];
+};
 
 export default function NovoAtendimentoPage() {
+  const router = useRouter();
+
+  const [pacientes, setPacientes] = useState<Paciente[]>([]);
+  const [procedimentos, setProcedimentos] = useState<Procedimento[]>([]);
+  const [clinicas, setClinicas] = useState<Clinica[]>([]);
+
+  const [carregandoDados, setCarregandoDados] = useState(true);
+  const [erroDados, setErroDados] = useState("");
   const [busca, setBusca] = useState("");
 
   const [pacienteSelecionado, setPacienteSelecionado] = useState<
-    (typeof pacientes)[number] | null
+    Paciente | null
   >(null);
   const [procedimentosCancelados, setProcedimentosCancelados] = useState<
   Record<number, boolean>
@@ -122,7 +109,7 @@ export default function NovoAtendimentoPage() {
   const [novoEmail, setNovoEmail] = useState("");
   const [buscaProcedimento, setBuscaProcedimento] = useState("");
   const [procedimentosSelecionados, setProcedimentosSelecionados] = useState<
-     (typeof procedimentos)[number][]
+     Procedimento[]
   >([]);
   const [clinicasSelecionadas, setClinicasSelecionadas] = useState<
   Record<number, number>
@@ -158,6 +145,79 @@ export default function NovoAtendimentoPage() {
   const [pagamentosGuias, setPagamentosGuias] = useState<
   Record<string, number>
   >({});
+  useEffect(() => {
+    async function carregarDados() {
+      try {
+        setCarregandoDados(true);
+        setErroDados("");
+
+        const [resPacientes, resProcedimentos, resClinicas] =
+          await Promise.all([
+            fetch("http://localhost:3333/pacientes"),
+            fetch("http://localhost:3333/procedimentos"),
+            fetch("http://localhost:3333/clinicas"),
+          ]);
+
+        if (!resPacientes.ok || !resProcedimentos.ok || !resClinicas.ok) {
+          throw new Error("Erro ao carregar dados da API.");
+        }
+
+        const pacientesApi: PacienteApi[] = await resPacientes.json();
+        const procedimentosApi: ProcedimentoApi[] = await resProcedimentos.json();
+        const clinicasApi: ClinicaApi[] = await resClinicas.json();
+
+        const pacientesAdaptados: Paciente[] = pacientesApi.map((paciente) => ({
+          id: paciente.id,
+          nome: paciente.nome,
+          cpf: paciente.cpf,
+          telefone: paciente.telefone,
+          email: paciente.email || undefined,
+          dataNascimento: paciente.dataNascimento || undefined,
+          empresa: paciente.empresa?.nome,
+          beneficioAtivo: paciente.beneficioAtivo,
+          beneficioNome:
+            paciente.beneficioAtivo && paciente.empresa
+              ? paciente.empresa.nome
+              : undefined,
+          beneficioPercentual:
+            paciente.beneficioAtivo && paciente.empresa
+              ? Number(paciente.empresa.percentualBeneficio || 0)
+              : 0,
+        }));
+
+        const procedimentosAdaptados: Procedimento[] =
+          procedimentosApi.map((procedimento) => {
+            const primeiroPreco = procedimento.precos[0];
+
+            return {
+              id: procedimento.id,
+              nome: procedimento.nome,
+              categoria: procedimento.categoria || "Sem categoria",
+              valor: primeiroPreco ? Number(primeiroPreco.valorPaciente) : 0,
+              repasse: primeiroPreco ? Number(primeiroPreco.valorRepasse) : 0,
+            };
+          });
+
+        const clinicasAdaptadas: Clinica[] = clinicasApi.map((clinica) => ({
+          id: clinica.id,
+          nome: clinica.nome,
+          procedimentos: clinica.precos.map((preco) => preco.procedimentoId),
+        }));
+
+        setPacientes(pacientesAdaptados);
+        setProcedimentos(procedimentosAdaptados);
+        setClinicas(clinicasAdaptadas);
+      } catch (erro) {
+        console.error(erro);
+        setErroDados("Não foi possível carregar os dados do sistema.");
+      } finally {
+        setCarregandoDados(false);
+      }
+    }
+
+    carregarDados();
+  }, []);
+
   const pacientesFiltrados = useMemo(() => {
     const termo = busca.toLowerCase().trim();
 
@@ -172,7 +232,7 @@ export default function NovoAtendimentoPage() {
         paciente.telefone.includes(termo)
       );
     });
-  }, [busca]);
+  }, [busca, pacientes]);
   const procedimentosFiltrados = useMemo(() => {
   const termo = buscaProcedimento.toLowerCase().trim();
 
@@ -183,7 +243,7 @@ export default function NovoAtendimentoPage() {
   return procedimentos.filter((procedimento) =>
     procedimento.nome.toLowerCase().includes(termo)
   );
-}, [buscaProcedimento]);
+}, [buscaProcedimento, procedimentos]);
 
 const guias = useMemo(() => {
   const grupos: Record<
@@ -195,7 +255,7 @@ const guias = useMemo(() => {
       tipoAgendamento: "horario" | "aguardando" | "ordem";
       data: string;
       horario: string;
-      procedimentos: (typeof procedimentos)[number][];
+      procedimentos: Procedimento[];
     }
   > = {};
 
@@ -246,96 +306,201 @@ const guias = useMemo(() => {
   tiposAgendamento,
   datasAgendamento,
   horariosAgendamento,
+  clinicas,
 ]);
 
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    const salvo = localStorage.getItem("digna-conect-atendimento-rascunho");
 
-    if (!salvo) {
+  async function salvarAtendimentoParaDepois() {
+    if (!pacienteSelecionado) {
+      alert("Selecione um paciente antes de salvar o atendimento.");
       return;
     }
 
     try {
-      const rascunho = JSON.parse(salvo);
+      const guiasParaSalvar = guias.map((guia) => {
+        const procedimentosAtivos = guia.procedimentos.filter(
+          (procedimento) => !procedimentosCancelados[procedimento.id]
+        );
 
-      if (typeof rascunho.etapaAtual === "number") {
-        setEtapaAtual(rascunho.etapaAtual);
+        const subtotal = procedimentosAtivos.reduce(
+          (total, procedimento) => total + procedimento.valor,
+          0
+        );
+
+        const repasseTotal = procedimentosAtivos.reduce(
+          (total, procedimento) => total + procedimento.repasse,
+          0
+        );
+
+        const percentualBeneficio = pacienteSelecionado.beneficioAtivo
+          ? pacienteSelecionado.beneficioPercentual
+          : 0;
+
+        const valorBeneficio = subtotal * (percentualBeneficio / 100);
+        const descontoMaximo = Math.max(subtotal - repasseTotal, 0);
+
+        const descontoManualInformado = pacienteSelecionado.beneficioAtivo
+          ? 0
+          : descontosGuias[guia.chave] || 0;
+
+        const descontoManual = Math.min(
+          descontoManualInformado,
+          descontoMaximo
+        );
+
+        const valorFinal = Math.max(
+          subtotal - valorBeneficio - descontoManual,
+          0
+        );
+
+        const valorPago = pagamentosGuias[guia.chave] || 0;
+        const valorEstornado = estornosGuias[guia.chave] || 0;
+        const valorPagoLiquido = Math.max(valorPago - valorEstornado, 0);
+        const saldoPendente = Math.max(valorFinal - valorPagoLiquido, 0);
+        const valorEstornoNecessario = Math.max(
+          valorPagoLiquido - valorFinal,
+          0
+        );
+        const possuiEstornoPendente = valorEstornoNecessario > 0;
+
+        const guiaQuitada =
+          !!guiasSalvas[guia.chave] &&
+          saldoPendente === 0 &&
+          !possuiEstornoPendente;
+
+        let status = "RASCUNHO";
+
+        if (guiasSalvas[guia.chave]) {
+          status = "AGUARDANDO_PAGAMENTO";
+        }
+
+        if (valorPagoLiquido > 0 && !guiaQuitada) {
+          status = "PARCIALMENTE_PAGA";
+        }
+
+        if (guiaQuitada) {
+          status = "PAGA";
+        }
+
+        if (possuiEstornoPendente) {
+          status = "ESTORNO_PENDENTE";
+        }
+
+        return {
+          clinicaId: guia.clinicaId,
+          status,
+          subtotal,
+          desconto: descontoManual,
+          beneficio: valorBeneficio,
+          valorFinal,
+          valorPago,
+          valorEstornado,
+          itens: guia.procedimentos.map((procedimento) => ({
+            procedimentoId: procedimento.id,
+            valorPaciente: procedimento.valor,
+            valorRepasse: procedimento.repasse,
+            tipoAgendamento: guia.tipoAgendamento,
+            dataAgendamento: guia.data || null,
+            horarioAgendamento: guia.horario || null,
+            cancelado: !!procedimentosCancelados[procedimento.id],
+          })),
+        };
+      });
+
+      const resposta = await fetch("http://localhost:3333/atendimentos", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          pacienteId: pacienteSelecionado.id,
+          etapaAtual: etapaAtual + 1,
+          guias: guiasParaSalvar,
+        }),
+      });
+
+      const dados = await resposta.json();
+
+      if (!resposta.ok) {
+        alert(dados.erro || "Não foi possível salvar o atendimento.");
+        return;
       }
 
-      if (rascunho.pacienteSelecionado) {
-        setPacienteSelecionado(rascunho.pacienteSelecionado);
-      }
-
-      if (Array.isArray(rascunho.procedimentosSelecionados)) {
-        setProcedimentosSelecionados(rascunho.procedimentosSelecionados);
-      }
-
-      setClinicasSelecionadas(rascunho.clinicasSelecionadas || {});
-      setTiposAgendamento(rascunho.tiposAgendamento || {});
-      setDatasAgendamento(rascunho.datasAgendamento || {});
-      setHorariosAgendamento(rascunho.horariosAgendamento || {});
-      setDescontosGuias(rascunho.descontosGuias || {});
-      setGuiasSalvas(rascunho.guiasSalvas || {});
-      setGuiasPagas(rascunho.guiasPagas || {});
-      setPagamentosGuias(rascunho.pagamentosGuias || {});
-      setProcedimentosCancelados(rascunho.procedimentosCancelados || {});
-      setEstornosGuias(rascunho.estornosGuias || {});
-    } catch (error) {
-      console.error("Não foi possível recuperar o atendimento salvo.", error);
       localStorage.removeItem("digna-conect-atendimento-rascunho");
+
+      alert(`Atendimento #${dados.id} salvo com sucesso.`);
+      router.push("/atendimentos");
+    } catch (erro) {
+      console.error("Erro ao salvar atendimento:", erro);
+      alert(
+        "Não foi possível conectar ao servidor para salvar o atendimento."
+      );
     }
-  }, []);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  function salvarAtendimentoParaDepois() {
-    const rascunho = {
-      etapaAtual,
-      pacienteSelecionado,
-      procedimentosSelecionados,
-      clinicasSelecionadas,
-      tiposAgendamento,
-      datasAgendamento,
-      horariosAgendamento,
-      descontosGuias,
-      guiasSalvas,
-      guiasPagas,
-      pagamentosGuias,
-      procedimentosCancelados,
-      estornosGuias,
-      salvoEm: new Date().toISOString(),
-    };
-
-    localStorage.setItem(
-      "digna-conect-atendimento-rascunho",
-      JSON.stringify(rascunho)
-    );
-
-    alert("Atendimento salvo. Você poderá continuar de onde parou.");
   }
 
-  function salvarNovoPaciente() {
+  async function salvarNovoPaciente() {
     if (!novoNome.trim() || !novoCpf.trim() || !novoTelefone.trim()) {
       alert("Preencha nome, CPF e telefone.");
       return;
     }
 
-    const novoPaciente = {
-      id: Date.now(),
-      nome: novoNome.trim(),
-      cpf: novoCpf.trim(),
-      telefone: novoTelefone.trim(),
-    };
+    try {
+      const resposta = await fetch("http://localhost:3333/pacientes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          nome: novoNome,
+          cpf: novoCpf,
+          telefone: novoTelefone,
+          email: novoEmail,
+          dataNascimento: novoNascimento,
+        }),
+      });
 
-    setPacienteSelecionado(novoPaciente);
-    setBusca("");
-    setNovoPacienteAberto(false);
+      const dados = await resposta.json();
 
-    setNovoNome("");
-    setNovoCpf("");
-    setNovoNascimento("");
-    setNovoTelefone("");
-    setNovoEmail("");
+      if (!resposta.ok) {
+        alert(dados.erro || "Não foi possível cadastrar o paciente.");
+        return;
+      }
+
+      const novoPaciente: Paciente = {
+        id: dados.id,
+        nome: dados.nome,
+        cpf: dados.cpf,
+        telefone: dados.telefone,
+        email: dados.email || undefined,
+        dataNascimento: dados.dataNascimento || undefined,
+        empresa: dados.empresa?.nome,
+        beneficioAtivo: dados.beneficioAtivo,
+        beneficioNome:
+          dados.beneficioAtivo && dados.empresa
+            ? dados.empresa.nome
+            : undefined,
+        beneficioPercentual:
+          dados.beneficioAtivo && dados.empresa
+            ? Number(dados.empresa.percentualBeneficio || 0)
+            : 0,
+      };
+
+      setPacientes((atuais) => [...atuais, novoPaciente]);
+      setPacienteSelecionado(novoPaciente);
+      setBusca(novoPaciente.nome);
+      setNovoPacienteAberto(false);
+
+      setNovoNome("");
+      setNovoCpf("");
+      setNovoNascimento("");
+      setNovoTelefone("");
+      setNovoEmail("");
+    } catch (erro) {
+      console.error("Erro ao cadastrar paciente:", erro);
+      alert(
+        "Não foi possível conectar ao servidor para cadastrar o paciente."
+      );
+    }
   }
 
   return (
@@ -348,6 +513,22 @@ const guias = useMemo(() => {
         <p className="mt-1 text-sm text-xango-muted">
           Inicie um novo atendimento e acompanhe todas as etapas do processo.
         </p>
+
+        {carregandoDados && (
+          <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3">
+            <p className="text-sm text-blue-700">
+              Carregando dados do sistema...
+            </p>
+          </div>
+        )}
+
+        {erroDados && (
+          <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3">
+            <p className="text-sm font-medium text-red-700">
+              {erroDados}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="mb-6 rounded-lg border border-xango-border bg-white p-4 shadow-sm">
