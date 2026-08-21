@@ -146,6 +146,17 @@ app.post("/pacientes", async (req, res) => {
 
     const cpfLimpo = cpf.replace(/\D/g, "");
 
+    const telefoneLimpo = telefone.replace(/\D/g, "");
+
+    const nomePadronizado = nome
+      .trim()
+      .replace(/\s+/g, " ")
+      .toUpperCase();
+
+    const emailPadronizado = email?.trim()
+      ? email.trim().toLowerCase()
+      : null;
+
     const pacienteExistente = await prisma.paciente.findUnique({
       where: {
         cpf: cpfLimpo,
@@ -160,10 +171,10 @@ app.post("/pacientes", async (req, res) => {
 
     const paciente = await prisma.paciente.create({
       data: {
-        nome: nome.trim(),
+        nome: nomePadronizado,
         cpf: cpfLimpo,
-        telefone: telefone.trim(),
-        email: email?.trim() || null,
+        telefone: telefoneLimpo,
+        email: emailPadronizado,
         dataNascimento: dataNascimento
           ? new Date(`${dataNascimento}T12:00:00`)
           : null,

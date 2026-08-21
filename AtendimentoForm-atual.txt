@@ -112,41 +112,6 @@ type AtendimentoExistenteApi = {
   }[];
 };
 
-
-function somenteNumeros(valor: string) {
-  return valor.replace(/\D/g, "");
-}
-
-function formatarCpf(valor: string) {
-  const numeros = somenteNumeros(valor).slice(0, 11);
-
-  if (numeros.length <= 3) return numeros;
-  if (numeros.length <= 6) {
-    return `${numeros.slice(0, 3)}.${numeros.slice(3)}`;
-  }
-  if (numeros.length <= 9) {
-    return `${numeros.slice(0, 3)}.${numeros.slice(3, 6)}.${numeros.slice(6)}`;
-  }
-
-  return `${numeros.slice(0, 3)}.${numeros.slice(3, 6)}.${numeros.slice(6, 9)}-${numeros.slice(9, 11)}`;
-}
-
-function formatarTelefone(valor: string) {
-  const numeros = somenteNumeros(valor).slice(0, 11);
-
-  if (numeros.length === 0) return "";
-  if (numeros.length <= 2) return `(${numeros}`;
-  if (numeros.length <= 6) {
-    return `(${numeros.slice(0, 2)}) ${numeros.slice(2)}`;
-  }
-
-  if (numeros.length <= 10) {
-    return `(${numeros.slice(0, 2)}) ${numeros.slice(2, 6)}-${numeros.slice(6, 10)}`;
-  }
-
-  return `(${numeros.slice(0, 2)}) ${numeros.slice(2, 7)}-${numeros.slice(7, 11)}`;
-}
-
 export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps) {
   const router = useRouter();
 
@@ -438,23 +403,19 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
 
   const pacientesFiltrados = useMemo(() => {
     const termo = busca.toLowerCase().trim();
-    const termoNumerico = somenteNumeros(busca);
 
     if (!termo) {
       return [];
     }
-
+    
     return pacientes.filter((paciente) => {
       return (
         paciente.nome.toLowerCase().includes(termo) ||
-        (termoNumerico.length > 0 &&
-          somenteNumeros(paciente.cpf).includes(termoNumerico)) ||
-        (termoNumerico.length > 0 &&
-          somenteNumeros(paciente.telefone).includes(termoNumerico))
+        paciente.cpf.includes(termo) ||
+        paciente.telefone.includes(termo)
       );
     });
   }, [busca, pacientes]);
-
   const procedimentosFiltrados = useMemo(() => {
   const termo = buscaProcedimento.toLowerCase().trim();
 
@@ -629,21 +590,21 @@ const guias = useMemo(() => {
         };
       });
 
-      const url = atendimentoId
-        ? `http://localhost:3333/atendimentos/${atendimentoId}`
-        : "http://localhost:3333/atendimentos";
+        const url = atendimentoId
+          ? `http://localhost:3333/atendimentos/${atendimentoId}`
+          : "http://localhost:3333/atendimentos";
 
-      const resposta = await fetch(url, {
-        method: atendimentoId ? "PUT" : "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          pacienteId: pacienteSelecionado.id,
-          etapaAtual: etapaAtual + 1,
-          guias: guiasParaSalvar,
-        }),
-      });
+        const resposta = await fetch(url, {
+          method: atendimentoId ? "PUT" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            pacienteId: pacienteSelecionado.id,
+            etapaAtual: etapaAtual + 1,
+            guias: guiasParaSalvar,
+          }),
+        });
 
       const dados = await resposta.json();
 
@@ -659,6 +620,7 @@ const guias = useMemo(() => {
           ? `Atendimento #${dados.id} atualizado com sucesso.`
           : `Atendimento #${dados.id} salvo com sucesso.`
       );
+
       router.push("/atendimentos");
     } catch (erro) {
       console.error("Erro ao salvar atendimento:", erro);
@@ -836,12 +798,12 @@ const guias = useMemo(() => {
                       </p>
 
                       <p className="mt-1 text-xs text-xango-muted">
-                        CPF: {formatarCpf(paciente.cpf)}
+                        CPF: {paciente.cpf}
                       </p>
                     </div>
 
                     <p className="text-xs text-xango-muted">
-                      {formatarTelefone(paciente.telefone)}
+                      {paciente.telefone}
                     </p>
                   </button>
                 );
@@ -877,7 +839,7 @@ const guias = useMemo(() => {
             </p>
 
             <p className="mt-1 text-sm text-xango-muted">
-              {formatarCpf(pacienteSelecionado.cpf)} • {formatarTelefone(pacienteSelecionado.telefone)}
+              {pacienteSelecionado.cpf} • {pacienteSelecionado.telefone}
             </p>
 
             {pacienteSelecionado.beneficioAtivo && (
@@ -2195,9 +2157,7 @@ const guias = useMemo(() => {
                 <input
                   type="text"
                   value={novoNome}
-                  onChange={(event) =>
-                    setNovoNome(event.target.value.toUpperCase())
-                  }
+                  onChange={(event) => setNovoNome(event.target.value)}
                   className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
                   placeholder="Nome do paciente"
                 />
@@ -2211,12 +2171,8 @@ const guias = useMemo(() => {
 
                   <input
                     type="text"
-                    value={formatarCpf(novoCpf)}
-                    onChange={(event) =>
-                      setNovoCpf(somenteNumeros(event.target.value))
-                    }
-                    inputMode="numeric"
-                    maxLength={14}
+                    value={novoCpf}
+                    onChange={(event) => setNovoCpf(event.target.value)}
                     className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
                     placeholder="000.000.000-00"
                   />
@@ -2243,12 +2199,8 @@ const guias = useMemo(() => {
 
                 <input
                   type="text"
-                  value={formatarTelefone(novoTelefone)}
-                  onChange={(event) =>
-                    setNovoTelefone(somenteNumeros(event.target.value))
-                  }
-                  inputMode="numeric"
-                  maxLength={15}
+                  value={novoTelefone}
+                  onChange={(event) => setNovoTelefone(event.target.value)}
                   className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
                   placeholder="(13) 99999-9999"
                 />
@@ -2262,9 +2214,7 @@ const guias = useMemo(() => {
                 <input
                   type="email"
                   value={novoEmail}
-                  onChange={(event) =>
-                    setNovoEmail(event.target.value.toLowerCase())
-                  }
+                  onChange={(event) => setNovoEmail(event.target.value)}
                   className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
                   placeholder="paciente@email.com"
                 />
