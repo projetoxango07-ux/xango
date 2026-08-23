@@ -18,80 +18,6 @@ const PORT = 3333;
 app.use(cors());
 app.use(express.json());
 
-function mapearFormaPagamento(
-  forma: string | undefined
-):
-  | "PIX"
-  | "DINHEIRO"
-  | "CARTAO_CREDITO"
-  | "CARTAO_DEBITO"
-  | "TRANSFERENCIA"
-  | "OUTRO" {
-  const valor = (forma || "").toLowerCase();
-
-  if (valor === "pix") return "PIX";
-  if (valor === "dinheiro") return "DINHEIRO";
-  if (valor === "credito") return "CARTAO_CREDITO";
-  if (valor === "debito") return "CARTAO_DEBITO";
-  if (valor === "transferencia") return "TRANSFERENCIA";
-
-  return "OUTRO";
-}
-
-function calcularStatusGuia(
-  statusRecebido: string | undefined,
-  valorFinal: number,
-  valorPago: number,
-  valorEstornado: number
-):
-  | "RASCUNHO"
-  | "AGUARDANDO_PAGAMENTO"
-  | "PARCIALMENTE_PAGA"
-  | "PAGA"
-  | "ESTORNO_PENDENTE"
-  | "CANCELADA" {
-  if (statusRecebido === "CANCELADA") {
-    return "CANCELADA";
-  }
-
-  if (statusRecebido === "RASCUNHO") {
-    return "RASCUNHO";
-  }
-
-  const pagoLiquido = Math.max(valorPago - valorEstornado, 0);
-
-  if (pagoLiquido > valorFinal) {
-    return "ESTORNO_PENDENTE";
-  }
-
-  if (valorFinal > 0 && pagoLiquido >= valorFinal) {
-    return "PAGA";
-  }
-
-  if (pagoLiquido > 0) {
-    return "PARCIALMENTE_PAGA";
-  }
-
-  if (statusRecebido === "AGUARDANDO_PAGAMENTO") {
-    return "AGUARDANDO_PAGAMENTO";
-  }
-
-  if (statusRecebido === "PARCIALMENTE_PAGA") {
-    return "PARCIALMENTE_PAGA";
-  }
-
-  if (statusRecebido === "PAGA") {
-    return "PAGA";
-  }
-
-  if (statusRecebido === "ESTORNO_PENDENTE") {
-    return "ESTORNO_PENDENTE";
-  }
-
-  return "AGUARDANDO_PAGAMENTO";
-}
-
-
 // ======================================================
 // TESTE DA API
 // ======================================================
@@ -309,28 +235,17 @@ app.post("/atendimentos", async (req, res) => {
       });
 
       for (const guiaRecebida of guias) {
-        const valorFinal = Number(guiaRecebida.valorFinal) || 0;
-        const valorPago = Number(guiaRecebida.valorPago) || 0;
-        const valorEstornado = Number(guiaRecebida.valorEstornado) || 0;
-
-        const statusCalculado = calcularStatusGuia(
-          guiaRecebida.status,
-          valorFinal,
-          valorPago,
-          valorEstornado
-        );
-
         const guia = await tx.guia.create({
           data: {
             atendimentoId: novoAtendimento.id,
             clinicaId: Number(guiaRecebida.clinicaId),
 
-            status: statusCalculado,
+            status: guiaRecebida.status || "RASCUNHO",
 
             subtotal: Number(guiaRecebida.subtotal) || 0,
             desconto: Number(guiaRecebida.desconto) || 0,
             beneficio: Number(guiaRecebida.beneficio) || 0,
-            valorFinal,
+            valorFinal: Number(guiaRecebida.valorFinal) || 0,
           },
         });
 
@@ -372,37 +287,30 @@ app.post("/atendimentos", async (req, res) => {
           });
         }
 
-        const todosItensCancelados =
-          (guiaRecebida.itens || []).length > 0 &&
-          (guiaRecebida.itens || []).every(
-            (item: { cancelado?: boolean }) => !!item.cancelado
-          );
-
-        if (valorPago > 0 && todosItensCancelados) {
-          throw new Error("PAGAMENTO_GUIA_CANCELADA");
-        }
+        const valorPago = Number(guiaRecebida.valorPago) || 0;
 
         if (valorPago > 0) {
           await tx.pagamento.create({
             data: {
               guiaId: guia.id,
               valor: valorPago,
-              forma: mapearFormaPagamento(guiaRecebida.formaPagamento),
+              forma: "OUTRO",
               observacao:
-                guiaRecebida.observacaoPagamento ||
                 "Pagamento registrado durante criação inicial do atendimento.",
             },
           });
         }
+
+        const valorEstornado =
+          Number(guiaRecebida.valorEstornado) || 0;
 
         if (valorEstornado > 0) {
           await tx.estorno.create({
             data: {
               guiaId: guia.id,
               valor: valorEstornado,
-              forma: mapearFormaPagamento(guiaRecebida.formaEstorno),
+              forma: "OUTRO",
               motivo:
-                guiaRecebida.observacaoEstorno ||
                 "Estorno registrado durante criação inicial do atendimento.",
             },
           });
@@ -434,15 +342,6 @@ app.post("/atendimentos", async (req, res) => {
     return res.status(201).json(atendimento);
   } catch (erro) {
     console.error("Erro ao criar atendimento:", erro);
-
-    if (
-      erro instanceof Error &&
-      erro.message === "PAGAMENTO_GUIA_CANCELADA"
-    ) {
-      return res.status(400).json({
-        erro: "Não é permitido registrar pagamento em uma guia com todos os procedimentos cancelados.",
-      });
-    }
 
     return res.status(500).json({
       erro: "Não foi possível salvar o atendimento.",
@@ -535,12 +434,9 @@ app.put("/atendimentos/:id", async (req, res) => {
               },
               data: {
                 clinicaId,
-                status: calcularStatusGuia(
-                  guiaRecebida.status,
-                  Number(guiaRecebida.valorFinal) || 0,
-                  Number(guiaRecebida.valorPago) || 0,
-                  Number(guiaRecebida.valorEstornado) || 0
-                ),
+                status:
+                  guiaRecebida.status ||
+                  guiaExistente.status,
 
                 subtotal:
                   Number(guiaRecebida.subtotal) || 0,
@@ -667,24 +563,13 @@ app.put("/atendimentos/:id", async (req, res) => {
             const diferencaPagamento =
               totalPagoTela - totalPagoBanco;
 
-            const todosItensCancelados =
-              (guiaRecebida.itens || []).length > 0 &&
-              (guiaRecebida.itens || []).every(
-                (item: { cancelado?: boolean }) => !!item.cancelado
-              );
-
-            if (diferencaPagamento > 0 && todosItensCancelados) {
-              throw new Error("PAGAMENTO_GUIA_CANCELADA");
-            }
-
             if (diferencaPagamento > 0) {
               await tx.pagamento.create({
                 data: {
                   guiaId,
                   valor: diferencaPagamento,
-                  forma: mapearFormaPagamento(guiaRecebida.formaPagamento),
+                  forma: "OUTRO",
                   observacao:
-                    guiaRecebida.observacaoPagamento ||
                     "Pagamento acrescentado durante atualização do atendimento.",
                 },
               });
@@ -711,9 +596,8 @@ app.put("/atendimentos/:id", async (req, res) => {
                 data: {
                   guiaId,
                   valor: diferencaEstorno,
-                  forma: mapearFormaPagamento(guiaRecebida.formaEstorno),
+                  forma: "OUTRO",
                   motivo:
-                    guiaRecebida.observacaoEstorno ||
                     "Estorno acrescentado durante atualização do atendimento.",
                 },
               });
@@ -725,12 +609,9 @@ app.put("/atendimentos/:id", async (req, res) => {
                 atendimentoId,
                 clinicaId,
 
-                status: calcularStatusGuia(
-                  guiaRecebida.status,
-                  Number(guiaRecebida.valorFinal) || 0,
-                  Number(guiaRecebida.valorPago) || 0,
-                  Number(guiaRecebida.valorEstornado) || 0
-                ),
+                status:
+                  guiaRecebida.status ||
+                  "RASCUNHO",
 
                 subtotal:
                   Number(guiaRecebida.subtotal) || 0,
@@ -798,24 +679,13 @@ app.put("/atendimentos/:id", async (req, res) => {
             const valorPago =
               Number(guiaRecebida.valorPago) || 0;
 
-            const todosItensCanceladosNovaGuia =
-              (guiaRecebida.itens || []).length > 0 &&
-              (guiaRecebida.itens || []).every(
-                (item: { cancelado?: boolean }) => !!item.cancelado
-              );
-
-            if (valorPago > 0 && todosItensCanceladosNovaGuia) {
-              throw new Error("PAGAMENTO_GUIA_CANCELADA");
-            }
-
             if (valorPago > 0) {
               await tx.pagamento.create({
                 data: {
                   guiaId,
                   valor: valorPago,
-                  forma: mapearFormaPagamento(guiaRecebida.formaPagamento),
+                  forma: "OUTRO",
                   observacao:
-                    guiaRecebida.observacaoPagamento ||
                     "Pagamento registrado durante atualização do atendimento.",
                 },
               });
@@ -831,9 +701,8 @@ app.put("/atendimentos/:id", async (req, res) => {
                 data: {
                   guiaId,
                   valor: valorEstornado,
-                  forma: mapearFormaPagamento(guiaRecebida.formaEstorno),
+                  forma: "OUTRO",
                   motivo:
-                    guiaRecebida.observacaoEstorno ||
                     "Estorno registrado durante atualização do atendimento.",
                 },
               });
@@ -903,15 +772,6 @@ app.put("/atendimentos/:id", async (req, res) => {
       "Erro ao atualizar atendimento:",
       erro
     );
-
-    if (
-      erro instanceof Error &&
-      erro.message === "PAGAMENTO_GUIA_CANCELADA"
-    ) {
-      return res.status(400).json({
-        erro: "Não é permitido registrar pagamento em uma guia com todos os procedimentos cancelados.",
-      });
-    }
 
     return res.status(500).json({
       erro: "Não foi possível atualizar o atendimento.",

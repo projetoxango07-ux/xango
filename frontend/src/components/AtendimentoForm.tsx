@@ -585,8 +585,18 @@ const guias = useMemo(() => {
         );
         const possuiEstornoPendente = valorEstornoNecessario > 0;
 
+        const todosProcedimentosCancelados =
+          guia.procedimentos.length > 0 &&
+          procedimentosAtivos.length === 0;
+
+        const cancelamentoLiquidado =
+          todosProcedimentosCancelados &&
+          valorPago > 0 &&
+          valorEstornado >= valorPago;
+
         const guiaQuitada =
           !!guiasSalvas[guia.chave] &&
+          procedimentosAtivos.length > 0 &&
           saldoPendente === 0 &&
           !possuiEstornoPendente;
 
@@ -596,18 +606,27 @@ const guias = useMemo(() => {
           status = "AGUARDANDO_PAGAMENTO";
         }
 
-        if (valorPagoLiquido > 0 && !guiaQuitada) {
-          status = "PARCIALMENTE_PAGA";
+        if (todosProcedimentosCancelados) {
+          status = possuiEstornoPendente
+            ? "ESTORNO_PENDENTE"
+            : "CANCELADA";
+        } else {
+          if (valorPagoLiquido > 0 && !guiaQuitada) {
+            status = "PARCIALMENTE_PAGA";
+          }
+
+          if (guiaQuitada) {
+            status = "PAGA";
+          }
+
+          if (possuiEstornoPendente) {
+            status = "ESTORNO_PENDENTE";
+          }
         }
 
-        if (guiaQuitada) {
-          status = "PAGA";
+        if (cancelamentoLiquidado) {
+          status = "CANCELADA";
         }
-
-        if (possuiEstornoPendente) {
-          status = "ESTORNO_PENDENTE";
-        }
-
         return {
           clinicaId: guia.clinicaId,
           status,
@@ -1360,21 +1379,47 @@ const guias = useMemo(() => {
         const possuiEstornoPendente =
           valorEstornoNecessario > 0;
 
+
+        const todosProcedimentosCancelados =
+          guia.procedimentos.length > 0 &&
+          procedimentosAtivos.length === 0;
+
+        const cancelamentoLiquidado =
+          todosProcedimentosCancelados &&
+          valorPago > 0 &&
+          totalEstornado >= valorPago;
+
         const guiaQuitada =
           !!guiasSalvas[guia.chave] &&
+          procedimentosAtivos.length > 0 &&
           saldoPendente === 0 &&
           !possuiEstornoPendente;
-        
+
+        const podeImprimirGuia =
+          guiaQuitada &&
+          procedimentosAtivos.length > 0;
+
+        const podeImprimirComprovanteEstorno =
+          !!guiasSalvas[guia.chave] &&
+          cancelamentoLiquidado &&
+          !possuiEstornoPendente;
+
         const statusGuia =
           !guiasSalvas[guia.chave]
             ? "Não salva"
-            : possuiEstornoPendente
-              ? "Estorno pendente"
-              : guiaQuitada
-                ? "Paga"
-                : valorPagoLiquido > 0
-                  ? "Parcialmente paga"
-                  : "Aguardando pagamento";
+            : todosProcedimentosCancelados && possuiEstornoPendente
+              ? "Cancelada • estorno pendente"
+              : cancelamentoLiquidado
+                ? "Cancelada • valores liquidados"
+                : possuiEstornoPendente
+                  ? "Estorno pendente"
+                  : guiaQuitada
+                    ? "Paga"
+                    : valorPagoLiquido > 0
+                      ? "Parcialmente paga"
+                      : todosProcedimentosCancelados
+                        ? "Cancelada"
+                        : "Aguardando pagamento";
 
         return (
           <div
@@ -1746,30 +1791,44 @@ const guias = useMemo(() => {
                   Salvar guia
                 </button>
 
-                <button
-                  type="button"
-                  disabled={
-                    !guiasSalvas[guia.chave] ||
-                    guiaQuitada ||
-                    possuiEstornoPendente
-                  }
-                  onClick={() => {
+                {procedimentosAtivos.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={
+                      !guiasSalvas[guia.chave] ||
+                      guiaQuitada ||
+                      possuiEstornoPendente
+                    }
+                    onClick={() => {
                       setGuiaPagamentoAberta(guia.chave);
                       setFormaPagamento("");
                       setValorRecebido("");
-                  }}
-                  className="rounded-md border border-xango-primary px-4 py-2 text-xs font-semibold text-xango-primary transition enabled:hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Registrar pagamento
-                </button>
+                    }}
+                    className="rounded-md border border-xango-primary px-4 py-2 text-xs font-semibold text-xango-primary transition enabled:hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Registrar pagamento
+                  </button>
+                )}
 
-                <button
-                  type="button"
-                  disabled={!guiaQuitada}
-                  className="rounded-md border border-xango-border px-4 py-2 text-xs font-semibold text-xango-text transition enabled:hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Imprimir guia
-                </button>
+                {podeImprimirGuia && (
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="rounded-md border border-xango-border px-4 py-2 text-xs font-semibold text-xango-text transition hover:bg-xango-background"
+                  >
+                    Imprimir guia
+                  </button>
+                )}
+
+                {podeImprimirComprovanteEstorno && (
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="rounded-md border border-slate-300 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Imprimir comprovante de cancelamento/estorno
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1823,6 +1882,14 @@ const guias = useMemo(() => {
         );
 
         if (!guia) {
+          return null;
+        }
+
+        const procedimentosAtivosPagamento = guia.procedimentos.filter(
+          (procedimento) => !procedimentosCancelados[procedimento.id]
+        );
+
+        if (procedimentosAtivosPagamento.length === 0) {
           return null;
         }
 
