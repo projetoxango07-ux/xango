@@ -15,6 +15,17 @@ const prisma = new PrismaClient({
 const app = express();
 const PORT = 3333;
 
+// Temporário enquanto o login ainda não está implementado.
+// Depois estes valores virão do usuário autenticado.
+const ORGANIZACAO_PADRAO_ID = 1;
+const USUARIO_PADRAO_ID = 2;
+
+function calcularValidadeGuia(dataBase = new Date()) {
+  const validade = new Date(dataBase);
+  validade.setMonth(validade.getMonth() + 6);
+  return validade;
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -303,6 +314,8 @@ app.post("/atendimentos", async (req, res) => {
       const novoAtendimento = await tx.atendimento.create({
         data: {
           pacienteId: Number(pacienteId),
+          organizacaoId: ORGANIZACAO_PADRAO_ID,
+          criadoPorId: USUARIO_PADRAO_ID,
           etapaAtual: Number(etapaAtual) || 1,
           status: "EM_ANDAMENTO",
         },
@@ -324,6 +337,8 @@ app.post("/atendimentos", async (req, res) => {
           data: {
             atendimentoId: novoAtendimento.id,
             clinicaId: Number(guiaRecebida.clinicaId),
+            organizacaoId: ORGANIZACAO_PADRAO_ID,
+            geradaPorId: USUARIO_PADRAO_ID,
 
             status: statusCalculado,
 
@@ -331,6 +346,9 @@ app.post("/atendimentos", async (req, res) => {
             desconto: Number(guiaRecebida.desconto) || 0,
             beneficio: Number(guiaRecebida.beneficio) || 0,
             valorFinal,
+
+            emitidaEm: new Date(),
+            validadeAte: calcularValidadeGuia(),
           },
         });
 
@@ -503,6 +521,12 @@ app.put("/atendimentos/:id", async (req, res) => {
               ? Number(pacienteId)
               : atendimentoExistente.pacienteId,
 
+            organizacaoId:
+              atendimentoExistente.organizacaoId || ORGANIZACAO_PADRAO_ID,
+
+            criadoPorId:
+              atendimentoExistente.criadoPorId || USUARIO_PADRAO_ID,
+
             etapaAtual:
               Number(etapaAtual) ||
               atendimentoExistente.etapaAtual,
@@ -535,6 +559,19 @@ app.put("/atendimentos/:id", async (req, res) => {
               },
               data: {
                 clinicaId,
+
+                organizacaoId:
+                  guiaExistente.organizacaoId || ORGANIZACAO_PADRAO_ID,
+
+                geradaPorId:
+                  guiaExistente.geradaPorId || USUARIO_PADRAO_ID,
+
+                emitidaEm:
+                  guiaExistente.emitidaEm || new Date(),
+
+                validadeAte:
+                  guiaExistente.validadeAte || calcularValidadeGuia(),
+
                 status: calcularStatusGuia(
                   guiaRecebida.status,
                   Number(guiaRecebida.valorFinal) || 0,
@@ -724,6 +761,10 @@ app.put("/atendimentos/:id", async (req, res) => {
               data: {
                 atendimentoId,
                 clinicaId,
+                organizacaoId: ORGANIZACAO_PADRAO_ID,
+                geradaPorId: USUARIO_PADRAO_ID,
+                emitidaEm: new Date(),
+                validadeAte: calcularValidadeGuia(),
 
                 status: calcularStatusGuia(
                   guiaRecebida.status,
@@ -1005,6 +1046,98 @@ app.get("/atendimentos/:id", async (req, res) => {
 
     return res.status(500).json({
       erro: "Não foi possível carregar o atendimento.",
+    });
+  }
+});
+
+
+// ======================================================
+// BUSCAR GUIA POR ID - IMPRESSÃO
+// ======================================================
+
+app.get("/guias/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!id) {
+      return res.status(400).json({
+        erro: "ID da guia inválido.",
+      });
+    }
+
+    const guia = await prisma.guia.findUnique({
+      where: {
+        id,
+      },
+      include: {
+        clinica: true,
+        organizacao: true,
+        geradaPor: true,
+        atendimento: {
+          include: {
+            paciente: {
+              include: {
+                empresa: true,
+              },
+            },
+          },
+        },
+        itens: {
+          include: {
+            procedimento: true,
+          },
+          orderBy: {
+            id: "asc",
+          },
+        },
+        pagamentos: {
+          orderBy: {
+            id: "asc",
+          },
+        },
+        estornos: {
+          orderBy: {
+            id: "asc",
+          },
+        },
+      },
+    });
+
+    if (!guia) {
+      return res.status(404).json({
+        erro: "Guia não encontrada.",
+      });
+    }
+
+    let organizacao = guia.organizacao;
+    let geradaPor = guia.geradaPor;
+
+    if (!organizacao) {
+      organizacao = await prisma.organizacao.findUnique({
+        where: {
+          id: ORGANIZACAO_PADRAO_ID,
+        },
+      });
+    }
+
+    if (!geradaPor) {
+      geradaPor = await prisma.usuario.findUnique({
+        where: {
+          id: USUARIO_PADRAO_ID,
+        },
+      });
+    }
+
+    return res.json({
+      ...guia,
+      organizacao,
+      geradaPor,
+    });
+  } catch (erro) {
+    console.error("Erro ao carregar guia:", erro);
+
+    return res.status(500).json({
+      erro: "Não foi possível carregar a guia.",
     });
   }
 });

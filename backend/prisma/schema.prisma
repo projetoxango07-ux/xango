@@ -53,6 +53,51 @@ enum StatusRepasse {
   RECUSADO
 }
 
+enum PerfilUsuario {
+  ATENDENTE
+  GERENTE
+  ADMINISTRADOR
+  DESENVOLVEDOR
+}
+
+model Organizacao {
+  id            Int       @id @default(autoincrement())
+
+  nomeFantasia  String
+  razaoSocial   String?
+  documento     String?   @unique
+  telefone      String?
+  email         String?
+  endereco      String?
+
+  ativo         Boolean   @default(true)
+
+  usuarios      Usuario[]
+  atendimentos  Atendimento[]
+  guias         Guia[]
+
+  criadoEm      DateTime  @default(now())
+  atualizadoEm  DateTime  @updatedAt
+}
+
+model Usuario {
+  id              Int            @id @default(autoincrement())
+
+  nome            String
+  email           String?        @unique
+  perfil          PerfilUsuario  @default(ATENDENTE)
+  ativo           Boolean        @default(true)
+
+  organizacaoId   Int
+  organizacao     Organizacao    @relation(fields: [organizacaoId], references: [id])
+
+  atendimentosCriados Atendimento[] @relation("AtendimentoCriadoPor")
+  guiasGeradas        Guia[]        @relation("GuiaGeradaPor")
+
+  criadoEm        DateTime        @default(now())
+  atualizadoEm    DateTime        @updatedAt
+}
+
 model Empresa {
   id                  Int        @id @default(autoincrement())
   nome                String
@@ -87,11 +132,14 @@ model Paciente {
 
 model Clinica {
   id             Int           @id @default(autoincrement())
+
   nome           String
+  razaoSocial    String?
   documento      String?       @unique
   telefone       String?
   email          String?
   endereco       String?
+
   ativo          Boolean       @default(true)
 
   guias          Guia[]
@@ -142,6 +190,12 @@ model Atendimento {
   pacienteId       Int
   paciente         Paciente          @relation(fields: [pacienteId], references: [id])
 
+  organizacaoId    Int?
+  organizacao      Organizacao?      @relation(fields: [organizacaoId], references: [id])
+
+  criadoPorId      Int?
+  criadoPor        Usuario?          @relation("AtendimentoCriadoPor", fields: [criadoPorId], references: [id])
+
   status           StatusAtendimento @default(EM_ANDAMENTO)
   etapaAtual       Int               @default(1)
 
@@ -160,12 +214,21 @@ model Guia {
   clinicaId            Int
   clinica              Clinica      @relation(fields: [clinicaId], references: [id])
 
+  organizacaoId        Int?
+  organizacao          Organizacao? @relation(fields: [organizacaoId], references: [id])
+
+  geradaPorId          Int?
+  geradaPor            Usuario?     @relation("GuiaGeradaPor", fields: [geradaPorId], references: [id])
+
   status               StatusGuia   @default(RASCUNHO)
 
   subtotal             Decimal      @default(0) @db.Decimal(10, 2)
   desconto             Decimal      @default(0) @db.Decimal(10, 2)
   beneficio            Decimal      @default(0) @db.Decimal(10, 2)
   valorFinal           Decimal      @default(0) @db.Decimal(10, 2)
+
+  emitidaEm            DateTime?
+  validadeAte          DateTime?
 
   itens                 ItemGuia[]
   pagamentos            Pagamento[]

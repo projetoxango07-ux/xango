@@ -170,6 +170,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [novoPacienteAberto, setNovoPacienteAberto] = useState(false);
   const [guiasSalvas, setGuiasSalvas] = useState<Record<string, boolean>>({});
   const [guiasPagas, setGuiasPagas] = useState<Record<string, boolean>>({});
+  const [guiaIds, setGuiaIds] = useState<Record<string, number>>({});
   const [etapaAtual, setEtapaAtual] = useState(0);
   const [novoNome, setNovoNome] = useState("");
   const [novoCpf, setNovoCpf] = useState("");
@@ -334,6 +335,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         const novosCancelados: Record<number, boolean> = {};
         const novasGuiasSalvas: Record<string, boolean> = {};
         const novasGuiasPagas: Record<string, boolean> = {};
+        const novosGuiaIds: Record<string, number> = {};
         const novosDescontos: Record<string, number> = {};
         const novosPagamentos: Record<string, number> = {};
         const novosEstornos: Record<string, number> = {};
@@ -361,6 +363,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
             tipo === "horario" ? horario : "",
           ].join("-");
 
+          novosGuiaIds[chave] = guia.id;
           novasGuiasSalvas[chave] = guia.status !== "RASCUNHO";
           novasGuiasPagas[chave] = guia.status === "PAGA";
           novosDescontos[chave] = Number(guia.desconto || 0);
@@ -415,6 +418,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         setProcedimentosCancelados(novosCancelados);
         setGuiasSalvas(novasGuiasSalvas);
         setGuiasPagas(novasGuiasPagas);
+        setGuiaIds(novosGuiaIds);
         setDescontosGuias(novosDescontos);
         setPagamentosGuias(novosPagamentos);
         setEstornosGuias(novosEstornos);
@@ -1813,8 +1817,24 @@ const guias = useMemo(() => {
                 {podeImprimirGuia && (
                   <button
                     type="button"
-                    onClick={() => window.print()}
-                    className="rounded-md border border-xango-border px-4 py-2 text-xs font-semibold text-xango-text transition hover:bg-xango-background"
+                    disabled={!guiaIds[guia.chave]}
+                    onClick={() => {
+                      const guiaId = guiaIds[guia.chave];
+
+                      if (!guiaId) {
+                        alert(
+                          "Salve o atendimento antes de imprimir a guia."
+                        );
+                        return;
+                      }
+
+                      window.open(
+                        `/impressao/guia/${guiaId}`,
+                        "_blank",
+                        "noopener,noreferrer"
+                      );
+                    }}
+                    className="rounded-md border border-xango-border px-4 py-2 text-xs font-semibold text-xango-text transition enabled:hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Imprimir guia
                   </button>
@@ -1823,8 +1843,24 @@ const guias = useMemo(() => {
                 {podeImprimirComprovanteEstorno && (
                   <button
                     type="button"
-                    onClick={() => window.print()}
-                    className="rounded-md border border-slate-300 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                    disabled={!guiaIds[guia.chave]}
+                    onClick={() => {
+                      const guiaId = guiaIds[guia.chave];
+
+                      if (!guiaId) {
+                        alert(
+                          "Salve o atendimento antes de imprimir o comprovante."
+                        );
+                        return;
+                      }
+
+                      window.open(
+                        `/impressao/estorno/${guiaId}`,
+                        "_blank",
+                        "noopener,noreferrer"
+                      );
+                    }}
+                    className="rounded-md border border-slate-300 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Imprimir comprovante de cancelamento/estorno
                   </button>
