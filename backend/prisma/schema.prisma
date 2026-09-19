@@ -7,12 +7,33 @@ datasource db {
   provider = "postgresql"
 }
 
+enum TipoEstabelecimentoClinica {
+  CLINICA
+  LABORATORIO_ANALISES_CLINICAS
+}
+
+enum TipoPrecificacaoClinica {
+  INDIVIDUAL
+  CH
+}
+
+enum ModoPrecoProcedimento {
+  FIXO
+  CH
+}
+
 enum StatusAtendimento {
   EM_ANDAMENTO
   AGUARDANDO_PAGAMENTO
   PARCIALMENTE_PAGO
   CONCLUIDO
   CANCELADO
+}
+
+enum StatusOrcamento {
+  ABERTO
+  PARCIALMENTE_CONVERTIDO
+  ENCERRADO
 }
 
 enum StatusGuia {
@@ -53,11 +74,79 @@ enum StatusRepasse {
   RECUSADO
 }
 
+enum StatusRelatoProblema {
+  ABERTO
+  EM_ANALISE
+  RESOLVIDO
+}
+
+enum OrigemRepasse {
+  INTERNO
+  PORTAL_PARCEIRO
+}
+
+enum FormaPagamentoRepasse {
+  PIX
+  TRANSFERENCIA
+  BOLETO
+  DINHEIRO
+  OUTRO
+}
+
+enum TipoDocumentoRepasse {
+  COMPROVANTE_PAGAMENTO
+  NOTA_FISCAL_SERVICO
+}
+
+
+enum StatusAssinaturaSistema {
+  NAO_CONFIGURADA
+  ATIVA
+  EM_ATRASO
+  SUSPENSA
+  CANCELADA
+  ISENTA
+}
+
+enum StatusFaturaSistema {
+  ABERTA
+  PAGA
+  VENCIDA
+  CANCELADA
+}
+
 enum PerfilUsuario {
   ATENDENTE
   GERENTE
   ADMINISTRADOR
   DESENVOLVEDOR
+}
+
+enum StatusRecibo {
+  ATIVO
+  PARCIALMENTE_ESTORNADO
+  ESTORNADO
+  CANCELADO
+}
+
+enum TipoVinculoFamiliar {
+  PAI
+  MAE
+  FILHO
+  FILHA
+  IRMAO
+  IRMA
+  AVO
+  AVO_FEMININO
+  NETO
+  NETA
+  MARIDO
+  ESPOSA
+  COMPANHEIRO
+  COMPANHEIRA
+  RESPONSAVEL
+  DEPENDENTE
+  OUTRO
 }
 
 model Organizacao {
@@ -67,35 +156,147 @@ model Organizacao {
   razaoSocial   String?
   documento     String?   @unique
   telefone      String?
+  whatsapp      String?
   email         String?
   endereco      String?
+
+  // Parâmetros gerais usados para novos documentos.
+  // Alterações aqui não modificam orçamentos ou vouchers já emitidos.
+  validadeOrcamentoDiasPadrao       Int     @default(15)
+  condicoesPagamentoOrcamentoPadrao String? @db.Text
+  validadeGuiaMesesPadrao           Int     @default(6)
+
+  // Parâmetros operacionais/financeiros da organização.
+  // Os módulos financeiros consomem estas preferências sem alterar documentos já emitidos.
+  formasPagamentoHabilitadas FormaPagamento[] @default([PIX, DINHEIRO, CARTAO_CREDITO, CARTAO_DEBITO, TRANSFERENCIA, OUTRO])
+  textoPadraoRecibo          String?          @db.Text
+  textoPadraoEstorno         String?          @db.Text
+
+  // Assinatura do Digna Conect. Nesta etapa os dados são somente consultados
+  // pela organização; a administração ficará no futuro perfil DESENVOLVEDOR.
+  planoSistema                    String?
+  valorMensalidadeSistema         Decimal?                 @db.Decimal(10, 2)
+  diaVencimentoMensalidadeSistema Int?
+  statusAssinaturaSistema         StatusAssinaturaSistema  @default(NAO_CONFIGURADA)
+  proximaCobrancaSistema          DateTime?
 
   ativo         Boolean   @default(true)
 
   usuarios      Usuario[]
   atendimentos  Atendimento[]
+  orcamentos    Orcamento[]
+  modelosOrcamento ModeloOrcamento[]
   guias         Guia[]
+  recibos       Recibo[]
+  estornos      Estorno[]
+  serieRecibo   SerieRecibo?
+  serieEstorno  SerieEstorno?
+  faturasSistema FaturaSistema[]
+  repasses       Repasse[]
+  relatosProblema RelatoProblema[]
 
   criadoEm      DateTime  @default(now())
   atualizadoEm  DateTime  @updatedAt
 }
 
+
+model FaturaSistema {
+  id             Int                 @id @default(autoincrement())
+  codigoPublico  String?             @unique
+
+  organizacaoId  Int
+  organizacao    Organizacao         @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
+
+  // Competência deve representar o mês de referência da cobrança.
+  competencia    DateTime
+  valor          Decimal             @db.Decimal(10, 2)
+  vencimento     DateTime
+  status         StatusFaturaSistema @default(ABERTA)
+  pagoEm         DateTime?
+
+  // Link seguro para a fatura/boleto/PDF, preenchido pela área do desenvolvedor.
+  urlFatura      String?
+  observacoes    String?             @db.Text
+
+  criadoEm       DateTime            @default(now())
+  atualizadoEm   DateTime            @updatedAt
+
+  @@index([organizacaoId])
+  @@index([status])
+  @@index([vencimento])
+  @@index([competencia])
+}
+
 model Usuario {
   id              Int            @id @default(autoincrement())
 
+  codigoPublico   String?        @unique
   nome            String
   email           String?        @unique
   perfil          PerfilUsuario  @default(ATENDENTE)
   ativo           Boolean        @default(true)
 
+  // Autenticação e controle de acesso
+  senhaHash                   String?
+  trocarSenhaNoProximoLogin   Boolean        @default(false)
+  ultimoLoginEm               DateTime?
+  usarPermissoesPersonalizadas Boolean       @default(false)
+  permissoes                  String[]        @default([])
+
+  // Treinamento por usuário
+  tourGuiadoAtivo             Boolean         @default(false)
+  modoAprendizAtivo           Boolean         @default(false)
+  tourPuladoHojeData          String?
+
   organizacaoId   Int
   organizacao     Organizacao    @relation(fields: [organizacaoId], references: [id])
+  sessoes         SessaoUsuario[]
+  toursDiarios     TourPaginaUsuario[]
 
   atendimentosCriados Atendimento[] @relation("AtendimentoCriadoPor")
+  orcamentosCriados    Orcamento[]    @relation("OrcamentoCriadoPor")
+  modelosOrcamentoCriados ModeloOrcamento[] @relation("ModeloOrcamentoCriadoPor")
+  historicosOrcamento     HistoricoOrcamento[] @relation("HistoricoOrcamentoUsuario")
+  pacientesCriados     Paciente[]     @relation("PacienteCriadoPor")
   guiasGeradas        Guia[]        @relation("GuiaGeradaPor")
+  guiasConfirmadas    Guia[]        @relation("GuiaConfirmadaPor")
+  recibosEmitidos     Recibo[]      @relation("ReciboEmitidoPor")
+  estornosEmitidos     Estorno[]     @relation("EstornoEmitidoPor")
+  repassesSolicitados  Repasse[]     @relation("RepasseSolicitadoPor")
+  repassesAprovados    Repasse[]     @relation("RepasseAprovadoPor")
+  repassesRecusados    Repasse[]     @relation("RepasseRecusadoPor")
+  repassesPagos        Repasse[]     @relation("RepassePagoPor")
+  documentosRepasseEnviados     DocumentoRepasse[] @relation("DocumentoRepasseEnviadoPor")
+  documentosRepasseDesativados  DocumentoRepasse[] @relation("DocumentoRepasseDesativadoPor")
+  relatosProblema              RelatoProblema[]
 
   criadoEm        DateTime        @default(now())
   atualizadoEm    DateTime        @updatedAt
+}
+
+model SessaoUsuario {
+  id           Int       @id @default(autoincrement())
+  tokenHash    String    @unique
+  usuarioId    Int
+  usuario      Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  expiraEm     DateTime
+  ultimoUsoEm  DateTime  @default(now())
+  criadoEm     DateTime  @default(now())
+
+  @@index([usuarioId])
+  @@index([expiraEm])
+}
+
+model TourPaginaUsuario {
+  id           Int       @id @default(autoincrement())
+  usuarioId    Int
+  usuario      Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  dataChave    String
+  pagina       String
+  criadoEm     DateTime  @default(now())
+
+  @@unique([usuarioId, dataChave, pagina])
+  @@index([usuarioId, dataChave])
 }
 
 model Empresa {
@@ -112,22 +313,76 @@ model Empresa {
 }
 
 model Paciente {
-  id             Int           @id @default(autoincrement())
-  nome           String
-  cpf            String        @unique
-  telefone       String
-  email          String?
-  dataNascimento DateTime?
+  id                   Int       @id @default(autoincrement())
 
-  empresaId      Int?
-  empresa        Empresa?      @relation(fields: [empresaId], references: [id])
+  codigoPublico        String?   @unique
+  nome                 String
+  nomeSocial           String?
+  cpf                  String    @unique
+  rg                   String?
+  telefone             String
+  telefoneSecundario   String?
+  email                String?
+  dataNascimento       DateTime?
+  nomeMae              String?
 
-  beneficioAtivo Boolean       @default(false)
+  cep                  String?
+  logradouro           String?
+  numeroEndereco       String?
+  complementoEndereco  String?
+  bairro               String?
+  cidade               String?
+  uf                   String?
 
-  atendimentos   Atendimento[]
+  // Responsável legal é exigido pela aplicação quando o paciente é menor.
+  // Quando for a própria mãe, responsavelLegalEhMae = true evita duplicar os dados.
+  responsavelLegalEhMae       Boolean @default(false)
+  responsavelLegalNome        String?
+  responsavelLegalCpf         String?
+  responsavelLegalTelefone    String?
+  responsavelLegalParentesco  String?
 
-  criadoEm       DateTime      @default(now())
-  atualizadoEm   DateTime      @updatedAt
+  criadoPorId          Int?
+  criadoPor            Usuario? @relation("PacienteCriadoPor", fields: [criadoPorId], references: [id])
+
+  empresaId            Int?
+  empresa              Empresa? @relation(fields: [empresaId], references: [id])
+
+  beneficioAtivo       Boolean   @default(false)
+
+  atendimentos         Atendimento[]
+  orcamentos           Orcamento[]
+
+  vinculosComoOrigem   VinculoFamiliar[] @relation("VinculoPacienteOrigem")
+  vinculosComoDestino  VinculoFamiliar[] @relation("VinculoPacienteDestino")
+
+  criadoEm             DateTime  @default(now())
+  atualizadoEm         DateTime  @updatedAt
+}
+
+model VinculoFamiliar {
+  id                Int                 @id @default(autoincrement())
+
+  pacienteOrigemId  Int
+  pacienteOrigem    Paciente            @relation("VinculoPacienteOrigem", fields: [pacienteOrigemId], references: [id])
+
+  pacienteDestinoId Int
+  pacienteDestino   Paciente            @relation("VinculoPacienteDestino", fields: [pacienteDestinoId], references: [id])
+
+  tipo              TipoVinculoFamiliar
+
+  // Relações consanguíneas serão permanentes na aplicação.
+  // Cônjuge/companheiro pode ser encerrado sem apagar o histórico.
+  removivel         Boolean             @default(false)
+  ativo             Boolean             @default(true)
+  encerradoEm       DateTime?
+
+  criadoEm          DateTime            @default(now())
+  atualizadoEm      DateTime            @updatedAt
+
+  @@unique([pacienteOrigemId, pacienteDestinoId, tipo])
+  @@index([pacienteOrigemId])
+  @@index([pacienteDestinoId])
 }
 
 model Clinica {
@@ -137,12 +392,48 @@ model Clinica {
   razaoSocial    String?
   documento      String?       @unique
   telefone       String?
+  whatsapp       String?
   email          String?
+
+  tipoEstabelecimento TipoEstabelecimentoClinica @default(CLINICA)
+  tipoPrecificacao    TipoPrecificacaoClinica    @default(INDIVIDUAL)
+  valorChRepasse      Decimal?                    @db.Decimal(12, 4)
+  valorChPaciente     Decimal?                    @db.Decimal(12, 4)
+
+  // Campo legado mantido temporariamente para preservar os fluxos atuais.
   endereco       String?
 
+  // Endereço fiscal
+  cepFiscal          String?
+  logradouroFiscal   String?
+  numeroFiscal       String?
+  complementoFiscal  String?
+  bairroFiscal       String?
+  cidadeFiscal       String?
+  ufFiscal           String?
+
+  // Responsável legal
+  responsavelLegalNome      String?
+  responsavelLegalCpf       String?
+  responsavelLegalCargo     String?
+  responsavelLegalTelefone  String?
+  responsavelLegalEmail     String?
+
+  // Responsável financeiro
+  financeiroMesmoLegal           Boolean @default(false)
+  responsavelFinanceiroNome      String?
+  responsavelFinanceiroCpf       String?
+  responsavelFinanceiroCargo     String?
+  responsavelFinanceiroTelefone  String?
+  responsavelFinanceiroEmail     String?
+
+  observacoes    String?
   ativo          Boolean       @default(true)
 
+  unidades       UnidadeClinica[]
   guias          Guia[]
+  itensOrcamento ItemOrcamento[]
+  itensModeloOrcamento ItemModeloOrcamento[]
   precos         PrecoProcedimentoClinica[]
   repasses       Repasse[]
 
@@ -150,18 +441,92 @@ model Clinica {
   atualizadoEm   DateTime      @updatedAt
 }
 
+model UnidadeClinica {
+  id             Int       @id @default(autoincrement())
+
+  clinicaId      Int
+  clinica        Clinica   @relation(fields: [clinicaId], references: [id])
+
+  nome           String
+  codigoPublico  String?   @unique
+
+  // Ao marcar esta opção no cadastro, a aplicação copia o endereço fiscal.
+  // Os campos ficam gravados na unidade e podem ser alterados depois.
+  usaEnderecoFiscal Boolean @default(false)
+
+  cep            String?
+  logradouro     String?
+  numero         String?
+  complemento    String?
+  bairro         String?
+  cidade         String?
+  uf             String?
+
+  telefone       String?
+  whatsapp       String?
+  email          String?
+
+  ativo          Boolean   @default(true)
+
+  precosEspecificos PrecoProcedimentoUnidade[]
+  guias            Guia[]
+  itensOrcamento   ItemOrcamento[]
+  itensModeloOrcamento ItemModeloOrcamento[]
+
+  criadoEm       DateTime  @default(now())
+  atualizadoEm   DateTime  @updatedAt
+
+  @@index([clinicaId])
+}
+
+model ProcedimentoReferencia {
+  id                 Int            @id @default(autoincrement())
+  codigoTuss         String         @unique
+  nomeTuss           String
+  quantidadeCh       Decimal?       @db.Decimal(12, 4)
+  fonteCh            String?
+  versaoReferencia   String?
+  inicioVigencia     DateTime?
+  fimVigencia        DateTime?
+  ativo              Boolean        @default(true)
+
+  procedimentos      Procedimento[]
+
+  criadoEm           DateTime       @default(now())
+  atualizadoEm       DateTime       @updatedAt
+
+  @@index([nomeTuss])
+}
+
 model Procedimento {
   id             Int           @id @default(autoincrement())
   nome           String
   categoria      String?
   preparo        String?
+  aliases        String[]      @default([])
+
+  // Catálogo operacional Digna. A referência oficial fica separada em ProcedimentoReferencia.
+  referenciaId   Int?
+  referencia     ProcedimentoReferencia? @relation(fields: [referenciaId], references: [id])
+
+  // Campos legados mantidos temporariamente para uma migração segura.
+  // Novos vínculos devem usar referenciaId.
+  codigoTuss     String?       @unique
+  nomeTuss       String?
+  quantidadeCh   Decimal?      @db.Decimal(12, 4)
+
   ativo          Boolean       @default(true)
 
   precos         PrecoProcedimentoClinica[]
+  precosUnidade  PrecoProcedimentoUnidade[]
   itensGuia      ItemGuia[]
+  itensOrcamento ItemOrcamento[]
+  itensModeloOrcamento ItemModeloOrcamento[]
 
   criadoEm       DateTime      @default(now())
   atualizadoEm   DateTime      @updatedAt
+
+  @@index([referenciaId])
 }
 
 model PrecoProcedimentoClinica {
@@ -175,6 +540,7 @@ model PrecoProcedimentoClinica {
 
   valorPaciente    Decimal       @db.Decimal(10, 2)
   valorRepasse     Decimal       @db.Decimal(10, 2)
+  modoPreco        ModoPrecoProcedimento @default(FIXO)
 
   ativo            Boolean       @default(true)
 
@@ -184,8 +550,34 @@ model PrecoProcedimentoClinica {
   @@unique([clinicaId, procedimentoId])
 }
 
+model PrecoProcedimentoUnidade {
+  id               Int            @id @default(autoincrement())
+
+  unidadeClinicaId Int
+  unidadeClinica   UnidadeClinica @relation(fields: [unidadeClinicaId], references: [id])
+
+  procedimentoId   Int
+  procedimento     Procedimento   @relation(fields: [procedimentoId], references: [id])
+
+  // Exceção à tabela-base da clínica. Só existe quando esta unidade
+  // possui valores diferentes da tabela-base da clínica.
+  valorPaciente    Decimal        @db.Decimal(10, 2)
+  valorRepasse     Decimal        @db.Decimal(10, 2)
+
+  ativo            Boolean        @default(true)
+
+  criadoEm         DateTime       @default(now())
+  atualizadoEm     DateTime       @updatedAt
+
+  @@unique([unidadeClinicaId, procedimentoId])
+  @@index([unidadeClinicaId])
+  @@index([procedimentoId])
+}
+
 model Atendimento {
   id               Int               @id @default(autoincrement())
+
+  codigoPublico    String?           @unique
 
   pacienteId       Int
   paciente         Paciente          @relation(fields: [pacienteId], references: [id])
@@ -196,17 +588,173 @@ model Atendimento {
   criadoPorId      Int?
   criadoPor        Usuario?          @relation("AtendimentoCriadoPor", fields: [criadoPorId], references: [id])
 
-  status           StatusAtendimento @default(EM_ANDAMENTO)
-  etapaAtual       Int               @default(1)
+  status              StatusAtendimento @default(EM_ANDAMENTO)
+  etapaAtual          Int               @default(1)
 
-  guias            Guia[]
+  // Cancelamento lógico do atendimento. O histórico nunca é apagado.
+  canceladoEm         DateTime?
+  motivoCancelamento  String?
+
+  guias               Guia[]
 
   criadoEm         DateTime          @default(now())
   atualizadoEm     DateTime          @updatedAt
 }
 
+model ModeloOrcamento {
+  id              Int       @id @default(autoincrement())
+  nome            String
+  categoria       String?
+  descricao       String?
+  ativo           Boolean   @default(true)
+
+  // Organização e produtividade dos modelos.
+  favorito        Boolean   @default(false)
+  totalUsos       Int       @default(0)
+  ultimoUsoEm     DateTime?
+
+  organizacaoId   Int
+  organizacao     Organizacao @relation(fields: [organizacaoId], references: [id])
+
+  criadoPorId     Int?
+  criadoPor       Usuario? @relation("ModeloOrcamentoCriadoPor", fields: [criadoPorId], references: [id])
+
+  itens           ItemModeloOrcamento[]
+
+  criadoEm        DateTime  @default(now())
+  atualizadoEm    DateTime  @updatedAt
+
+  @@index([organizacaoId])
+  @@index([ativo])
+  @@index([favorito])
+  @@index([totalUsos])
+  @@index([nome])
+}
+
+model ItemModeloOrcamento {
+  id                Int       @id @default(autoincrement())
+
+  modeloId          Int
+  modelo            ModeloOrcamento @relation(fields: [modeloId], references: [id])
+
+  procedimentoId    Int
+  procedimento      Procedimento @relation(fields: [procedimentoId], references: [id])
+
+  // Clínica/unidade são preferências opcionais. O preço nunca fica salvo no modelo.
+  clinicaId         Int?
+  clinica           Clinica? @relation(fields: [clinicaId], references: [id])
+
+  unidadeClinicaId  Int?
+  unidadeClinica    UnidadeClinica? @relation(fields: [unidadeClinicaId], references: [id])
+
+  criadoEm          DateTime  @default(now())
+  atualizadoEm      DateTime  @updatedAt
+
+  @@unique([modeloId, procedimentoId])
+  @@index([procedimentoId])
+  @@index([clinicaId])
+  @@index([unidadeClinicaId])
+}
+
+model Orcamento {
+  id                Int              @id @default(autoincrement())
+
+  codigoPublico     String?          @unique
+
+  organizacaoId     Int?
+  organizacao       Organizacao?     @relation(fields: [organizacaoId], references: [id])
+
+  criadoPorId       Int?
+  criadoPor         Usuario?         @relation("OrcamentoCriadoPor", fields: [criadoPorId], references: [id])
+
+  // O orçamento pode existir antes do cadastro completo do paciente.
+  pacienteId        Int?
+  paciente          Paciente?        @relation(fields: [pacienteId], references: [id])
+
+  // Nome e telefone ficam gravados no orçamento para preservar o histórico
+  // e permitir orçamento sem CPF/cadastro completo.
+  nomePaciente      String
+  telefonePaciente  String
+
+  status            StatusOrcamento  @default(ABERTO)
+  observacoes       String?
+
+  // Validade comercial do orçamento. O status "vencido" é calculado
+  // automaticamente pela aplicação sem apagar nem alterar o histórico.
+  validadeDias      Int              @default(15)
+  validadeAte       DateTime?
+  condicoesPagamento String?
+
+  itens             ItemOrcamento[]
+  historico         HistoricoOrcamento[]
+
+  criadoEm          DateTime         @default(now())
+  atualizadoEm      DateTime         @updatedAt
+
+  @@index([organizacaoId])
+  @@index([pacienteId])
+  @@index([status])
+  @@index([validadeAte])
+}
+
+model ItemOrcamento {
+  id                Int             @id @default(autoincrement())
+
+  orcamentoId       Int
+  orcamento         Orcamento       @relation(fields: [orcamentoId], references: [id])
+
+  procedimentoId    Int
+  procedimento      Procedimento    @relation(fields: [procedimentoId], references: [id])
+
+  clinicaId         Int?
+  clinica           Clinica?        @relation(fields: [clinicaId], references: [id])
+
+  unidadeClinicaId  Int?
+  unidadeClinica    UnidadeClinica? @relation(fields: [unidadeClinicaId], references: [id])
+
+  // Valores congelados no momento em que o orçamento é salvo.
+  valorPaciente     Decimal         @default(0) @db.Decimal(10, 2)
+  valorRepasse      Decimal         @default(0) @db.Decimal(10, 2)
+
+  // Quando convertido, aponta exatamente para o item de guia gerado.
+  itemGuiaId        Int?            @unique
+  itemGuia          ItemGuia?       @relation(fields: [itemGuiaId], references: [id])
+  convertidoEm      DateTime?
+
+  criadoEm          DateTime        @default(now())
+  atualizadoEm      DateTime        @updatedAt
+
+  @@index([orcamentoId])
+  @@index([procedimentoId])
+  @@index([clinicaId])
+  @@index([unidadeClinicaId])
+}
+
+
+model HistoricoOrcamento {
+  id            Int        @id @default(autoincrement())
+
+  orcamentoId   Int
+  orcamento     Orcamento  @relation(fields: [orcamentoId], references: [id])
+
+  usuarioId     Int?
+  usuario       Usuario?   @relation("HistoricoOrcamentoUsuario", fields: [usuarioId], references: [id])
+
+  acao          String
+  descricao     String?
+
+  criadoEm      DateTime   @default(now())
+
+  @@index([orcamentoId])
+  @@index([usuarioId])
+  @@index([acao])
+  @@index([criadoEm])
+}
+
 model Guia {
   id                   Int          @id @default(autoincrement())
+
+  codigoPublico        String?      @unique
 
   atendimentoId        Int
   atendimento          Atendimento  @relation(fields: [atendimentoId], references: [id])
@@ -214,11 +762,22 @@ model Guia {
   clinicaId            Int
   clinica              Clinica      @relation(fields: [clinicaId], references: [id])
 
+  // Unidade/local em que esta guia será atendida.
+  // Pode ser nula para clínicas legadas que ainda não possuem unidades cadastradas.
+  unidadeClinicaId     Int?
+  unidadeClinica       UnidadeClinica? @relation(fields: [unidadeClinicaId], references: [id])
+
   organizacaoId        Int?
   organizacao          Organizacao? @relation(fields: [organizacaoId], references: [id])
 
   geradaPorId          Int?
   geradaPor            Usuario?     @relation("GuiaGeradaPor", fields: [geradaPorId], references: [id])
+
+  confirmadaPorId      Int?
+  confirmadaPor        Usuario?     @relation("GuiaConfirmadaPor", fields: [confirmadaPorId], references: [id])
+
+  confirmadaEm         DateTime?
+  realizadaEm          DateTime?
 
   status               StatusGuia   @default(RASCUNHO)
 
@@ -234,9 +793,12 @@ model Guia {
   pagamentos            Pagamento[]
   estornos              Estorno[]
   repasses              RepasseItem[]
+  recibos               Recibo[]
 
   criadoEm              DateTime     @default(now())
   atualizadoEm          DateTime     @updatedAt
+
+  @@index([unidadeClinicaId])
 }
 
 model ItemGuia {
@@ -260,6 +822,8 @@ model ItemGuia {
   canceladoEm         DateTime?
   motivoCancelamento  String?
 
+  itemOrcamento       ItemOrcamento?
+
   criadoEm            DateTime          @default(now())
   atualizadoEm        DateTime          @updatedAt
 }
@@ -272,8 +836,10 @@ model Pagamento {
 
   valor           Decimal          @db.Decimal(10, 2)
   forma           FormaPagamento
-
   observacao      String?
+
+  recibos         ReciboPagamento[]
+  estornos        Estorno[]
 
   criadoEm        DateTime         @default(now())
 }
@@ -281,33 +847,211 @@ model Pagamento {
 model Estorno {
   id              Int              @id @default(autoincrement())
 
+  codigoPublico   String?          @unique
+  numero          Int?
+  ano             Int?
+
+  organizacaoId   Int?
+  organizacao     Organizacao?     @relation(fields: [organizacaoId], references: [id])
+
+  emitidoPorId    Int?
+  emitidoPor      Usuario?         @relation("EstornoEmitidoPor", fields: [emitidoPorId], references: [id])
+
   guiaId          Int
   guia            Guia             @relation(fields: [guiaId], references: [id])
+
+  pagamentoId     Int?
+  pagamento       Pagamento?       @relation(fields: [pagamentoId], references: [id])
 
   valor           Decimal          @db.Decimal(10, 2)
   forma           FormaPagamento
   motivo          String?
 
   criadoEm        DateTime         @default(now())
+
+  @@unique([organizacaoId, ano, numero])
+}
+
+model SerieEstorno {
+  id              Int          @id @default(autoincrement())
+
+  organizacaoId   Int          @unique
+  organizacao     Organizacao  @relation(fields: [organizacaoId], references: [id])
+
+  ultimoNumero    Int          @default(100000)
+
+  atualizadoEm    DateTime     @updatedAt
+}
+
+model SerieRecibo {
+  id              Int          @id @default(autoincrement())
+
+  organizacaoId   Int          @unique
+  organizacao     Organizacao  @relation(fields: [organizacaoId], references: [id])
+
+  ultimoNumero    Int          @default(100000)
+
+  atualizadoEm    DateTime     @updatedAt
+}
+
+model Recibo {
+  id                    Int           @id @default(autoincrement())
+
+  codigoPublico         String        @unique
+  numero                Int
+  ano                   Int
+
+  organizacaoId         Int
+  organizacao           Organizacao   @relation(fields: [organizacaoId], references: [id])
+
+  guiaId                Int
+  guia                   Guia          @relation(fields: [guiaId], references: [id])
+
+  emitidoPorId          Int?
+  emitidoPor            Usuario?       @relation("ReciboEmitidoPor", fields: [emitidoPorId], references: [id])
+
+  status                StatusRecibo   @default(ATIVO)
+
+  valorRecebido         Decimal        @db.Decimal(10, 2)
+  valorEstornado        Decimal        @default(0) @db.Decimal(10, 2)
+
+  emitidoEm             DateTime       @default(now())
+
+  // Fotografia do documento no momento da emissão.
+  nomePaciente          String
+  cpfPaciente           String
+  nomeClinica           String
+  documentoClinica      String?
+  nomeOrganizacao       String
+  documentoOrganizacao  String?
+  descricaoProcedimentos String
+  observacao            String?
+
+  pagamentos            ReciboPagamento[]
+
+  criadoEm              DateTime       @default(now())
+  atualizadoEm          DateTime       @updatedAt
+
+  @@unique([organizacaoId, ano, numero])
+}
+
+model ReciboPagamento {
+  reciboId          Int
+  recibo            Recibo      @relation(fields: [reciboId], references: [id], onDelete: Cascade)
+
+  pagamentoId       Int         @unique
+  pagamento         Pagamento   @relation(fields: [pagamentoId], references: [id])
+
+  criadoEm          DateTime    @default(now())
+
+  @@id([reciboId, pagamentoId])
+}
+
+model RelatoProblema {
+  id              Int                  @id @default(autoincrement())
+
+  organizacaoId   Int
+  organizacao     Organizacao          @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
+
+  usuarioId       Int
+  usuario         Usuario              @relation(fields: [usuarioId], references: [id])
+
+  titulo          String
+  descricao       String               @db.Text
+  pagina          String?
+  rota            String?
+  navegador       String?
+  screenshotMime  String?
+  screenshot      Bytes?
+
+  status          StatusRelatoProblema @default(ABERTO)
+
+  criadoEm        DateTime             @default(now())
+  atualizadoEm    DateTime             @updatedAt
+
+  @@index([organizacaoId])
+  @@index([usuarioId])
+  @@index([status])
+  @@index([criadoEm])
 }
 
 model Repasse {
-  id              Int             @id @default(autoincrement())
+  id                       Int             @id @default(autoincrement())
+  codigoPublico            String?         @unique
 
-  clinicaId       Int
-  clinica         Clinica         @relation(fields: [clinicaId], references: [id])
+  organizacaoId            Int?
+  organizacao              Organizacao?    @relation(fields: [organizacaoId], references: [id])
 
-  status          StatusRepasse   @default(SOLICITADO)
+  clinicaId                Int
+  clinica                  Clinica         @relation(fields: [clinicaId], references: [id])
 
-  valorTotal      Decimal         @default(0) @db.Decimal(10, 2)
+  status                   StatusRepasse   @default(SOLICITADO)
+  origem                   OrigemRepasse   @default(INTERNO)
 
-  solicitadoEm    DateTime        @default(now())
-  pagoEm          DateTime?
+  valorTotal               Decimal         @default(0) @db.Decimal(10, 2)
+  dataPagamentoSolicitada  DateTime?
 
-  itens           RepasseItem[]
+  solicitadoPorId          Int?
+  solicitadoPor            Usuario?        @relation("RepasseSolicitadoPor", fields: [solicitadoPorId], references: [id])
 
-  criadoEm        DateTime        @default(now())
-  atualizadoEm    DateTime        @updatedAt
+  aprovadoPorId            Int?
+  aprovadoPor              Usuario?        @relation("RepasseAprovadoPor", fields: [aprovadoPorId], references: [id])
+
+  recusadoPorId            Int?
+  recusadoPor              Usuario?        @relation("RepasseRecusadoPor", fields: [recusadoPorId], references: [id])
+
+  pagoPorId                Int?
+  pagoPor                  Usuario?        @relation("RepassePagoPor", fields: [pagoPorId], references: [id])
+
+  solicitadoEm             DateTime        @default(now())
+  emAnaliseEm              DateTime?
+  aprovadoEm               DateTime?
+  recusadoEm               DateTime?
+  pagoEm                   DateTime?
+  dataPagamentoEfetivo     DateTime?
+  formaPagamento           FormaPagamentoRepasse?
+  observacaoPagamento      String?         @db.Text
+
+  motivoRecusa             String?
+  observacoes              String?         @db.Text
+
+  itens                    RepasseItem[]
+  documentos               DocumentoRepasse[]
+
+  criadoEm                 DateTime        @default(now())
+  atualizadoEm             DateTime        @updatedAt
+
+  @@index([organizacaoId])
+  @@index([clinicaId])
+  @@index([status])
+  @@index([dataPagamentoSolicitada])
+}
+
+model DocumentoRepasse {
+  id                Int                    @id @default(autoincrement())
+
+  repasseId         Int
+  repasse           Repasse                @relation(fields: [repasseId], references: [id], onDelete: Cascade)
+
+  tipo              TipoDocumentoRepasse
+  nomeOriginal      String
+  mimeType          String
+  tamanhoBytes      Int
+  conteudo          Bytes
+  ativo             Boolean                @default(true)
+
+  enviadoPorId      Int?
+  enviadoPor        Usuario?               @relation("DocumentoRepasseEnviadoPor", fields: [enviadoPorId], references: [id])
+
+  desativadoEm      DateTime?
+  desativadoPorId   Int?
+  desativadoPor     Usuario?               @relation("DocumentoRepasseDesativadoPor", fields: [desativadoPorId], references: [id])
+
+  criadoEm          DateTime               @default(now())
+
+  @@index([repasseId])
+  @@index([tipo])
+  @@index([ativo])
 }
 
 model RepasseItem {

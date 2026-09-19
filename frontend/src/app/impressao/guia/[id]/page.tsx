@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import QRCode from "react-qr-code";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333";
+
 
 type GuiaApi = {
   id: number;
@@ -21,6 +23,19 @@ type GuiaApi = {
     email: string | null;
     endereco: string | null;
   };
+  unidadeClinica: {
+    id: number;
+    nome: string;
+    logradouro: string | null;
+    numero: string | null;
+    complemento: string | null;
+    bairro: string | null;
+    cidade: string | null;
+    uf: string | null;
+    telefone: string | null;
+    whatsapp: string | null;
+    email: string | null;
+  } | null;
   organizacao: {
     id: number;
     nomeFantasia: string;
@@ -118,6 +133,27 @@ function textoOuNaoInformado(valor: string | null | undefined) {
   return valor?.trim() || "Não informado";
 }
 
+function enderecoUnidade(unidade: GuiaApi["unidadeClinica"]) {
+  if (!unidade) return null;
+
+  const linha1 = [
+    unidade.logradouro,
+    unidade.numero,
+    unidade.complemento,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const linha2 = [
+    unidade.bairro,
+    unidade.cidade && `${unidade.cidade}${unidade.uf ? ` / ${unidade.uf}` : ""}`,
+  ]
+    .filter(Boolean)
+    .join(" • ");
+
+  return [linha1, linha2].filter(Boolean).join(" — ") || null;
+}
+
 
 function dataBr(valor: string | null) {
   if (!valor) return "";
@@ -142,7 +178,10 @@ export default function ImprimirGuiaPage() {
         setCarregando(true);
         setErro("");
 
-        const resposta = await fetch(`http://localhost:3333/guias/${id}`);
+        const resposta = await fetch(`${API_URL}/guias/${id}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
         const dados = await resposta.json();
 
         if (!resposta.ok) {
@@ -365,6 +404,11 @@ export default function ImprimirGuiaPage() {
           <div className="mt-2 grid gap-x-5 gap-y-2 rounded-md border border-slate-300 px-4 py-3 text-sm sm:grid-cols-2">
             <div className="sm:col-span-2">
               <p className="font-bold">{guia.clinica.nome}</p>
+              {guia.unidadeClinica && (
+                <p className="mt-1 text-sm font-bold text-teal-800">
+                  Unidade: {guia.unidadeClinica.nome}
+                </p>
+              )}
               {guia.clinica.razaoSocial && (
                 <p className="text-xs text-slate-600">
                   {guia.clinica.razaoSocial}
@@ -379,12 +423,12 @@ export default function ImprimirGuiaPage() {
 
             <div>
               <strong>Telefone:</strong>{" "}
-              {textoOuNaoInformado(guia.clinica.telefone)}
+              {textoOuNaoInformado(guia.unidadeClinica?.telefone || guia.clinica.telefone)}
             </div>
 
             <div className="sm:col-span-2">
-              <strong>Endereço:</strong>{" "}
-              {textoOuNaoInformado(guia.clinica.endereco)}
+              <strong>Endereço de atendimento:</strong>{" "}
+              {textoOuNaoInformado(enderecoUnidade(guia.unidadeClinica) || guia.clinica.endereco)}
             </div>
           </div>
         </section>
