@@ -501,20 +501,36 @@ function lerCookies(req: express.Request) {
   ) as Record<string, string>;
 }
 
+function configuracaoCookieSessao() {
+  const frontendUrl = String(process.env.FRONTEND_URL || "").trim().toLowerCase();
+  const ambienteOnline =
+    process.env.NODE_ENV === "production" ||
+    process.env.RENDER === "true" ||
+    frontendUrl.startsWith("https://");
+
+  return ambienteOnline
+    ? { sameSite: "None", secure: true }
+    : { sameSite: "Lax", secure: false };
+}
+
 function definirCookieSessao(res: express.Response, token: string, duracaoMs: number) {
-  const seguro = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const { sameSite, secure } = configuracaoCookieSessao();
   const maxAge = Math.floor(duracaoMs / 1000);
+  const seguro = secure ? "; Secure" : "";
+
   res.setHeader(
     "Set-Cookie",
-    `${COOKIE_SESSAO}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${seguro}`
+    `${COOKIE_SESSAO}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=${sameSite}; Max-Age=${maxAge}${seguro}`
   );
 }
 
 function limparCookieSessao(res: express.Response) {
-  const seguro = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const { sameSite, secure } = configuracaoCookieSessao();
+  const seguro = secure ? "; Secure" : "";
+
   res.setHeader(
     "Set-Cookie",
-    `${COOKIE_SESSAO}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${seguro}`
+    `${COOKIE_SESSAO}=; HttpOnly; Path=/; SameSite=${sameSite}; Max-Age=0${seguro}`
   );
 }
 
