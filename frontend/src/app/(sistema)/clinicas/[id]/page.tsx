@@ -24,6 +24,9 @@ import {
   RotateCcw,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type Unidade = {
   id: number;
   nome: string;
@@ -318,7 +321,7 @@ export default function ClinicaPage() {
           setErro("");
 
           const resposta = await fetch(
-            `http://localhost:3333/clinicas/${id}`,
+            `${API_URL}/clinicas/${id}`,
             {
               cache: "no-store",
             }
@@ -390,7 +393,7 @@ export default function ClinicaPage() {
     setErroImportacao("");
     setCarregandoClinicasImportacao(true);
     try {
-      const resposta = await fetch("http://localhost:3333/clinicas/resumo", {
+      const resposta = await fetch(`${API_URL}/clinicas/resumo`, {
         cache: "no-store", signal: controle.signal,
       });
       const dados = await resposta.json();
@@ -423,7 +426,7 @@ export default function ClinicaPage() {
     requisicaoImportacao.current = controle;
     setCarregandoPrecosOrigem(true);
     try {
-      const resposta = await fetch(`http://localhost:3333/clinicas/${valor}/precos`, {
+      const resposta = await fetch(`${API_URL}/clinicas/${valor}/precos`, {
         cache: "no-store", signal: controle.signal,
       });
       const dados = await resposta.json();
@@ -456,7 +459,7 @@ export default function ClinicaPage() {
       const formData = new FormData();
       formData.append("arquivo", arquivoExcel);
       const resposta = await fetch(
-        `http://localhost:3333/clinicas/${id}/precos/importar-excel/preview`,
+        `${API_URL}/clinicas/${id}/precos/importar-excel/preview`,
         { method: "POST", body: formData, signal: controle.signal }
       );
       // Alguns erros de upload/proxy não retornam JSON.
@@ -772,7 +775,7 @@ export default function ClinicaPage() {
             </button>
             <button type="button" onClick={async () => {
               setModalAdicionar(true);
-              const r = await fetch("http://localhost:3333/procedimentos", { cache: "no-store" });
+              const r = await fetch(`${API_URL}/procedimentos`, { cache: "no-store" });
               const dados = await r.json();
               setProcedimentosCatalogo(Array.isArray(dados) ? dados : []);
             }} className="flex items-center gap-2 rounded-md border border-xango-border bg-white px-3 py-2 text-sm font-semibold text-xango-primary">
@@ -870,7 +873,7 @@ export default function ClinicaPage() {
                               onClick={async () => {
                                 try {
                                   setSalvandoPrecoId(preco.id);
-                                  const resposta = await fetch(`http://localhost:3333/clinicas/${clinica.id}/precos/${preco.procedimento.id}`, {
+                                  const resposta = await fetch(`${API_URL}/clinicas/${clinica.id}/precos/${preco.procedimento.id}`, {
                                     method: "PUT",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ valorPaciente: paciente, valorRepasse: repasse }),
@@ -934,7 +937,7 @@ export default function ClinicaPage() {
                   try {
                     setCarregandoPrecosUnidade(true);
                     const r = await fetch(
-                      `http://localhost:3333/clinicas/${clinica.id}/unidades/${valor}/precos`,
+                      `${API_URL}/clinicas/${clinica.id}/unidades/${valor}/precos`,
                       { cache: "no-store" }
                     );
                     const d = await r.json();
@@ -1069,7 +1072,7 @@ export default function ClinicaPage() {
                                         try {
                                           setProcessando(true);
                                           const r = await fetch(
-                                            `http://localhost:3333/clinicas/${clinica.id}/unidades/${unidadePrecoId}/precos/${preco.procedimento.id}`,
+                                            `${API_URL}/clinicas/${clinica.id}/unidades/${unidadePrecoId}/precos/${preco.procedimento.id}`,
                                             {
                                               method: "PUT",
                                               headers: { "Content-Type": "application/json" },
@@ -1144,7 +1147,7 @@ export default function ClinicaPage() {
                                       try {
                                         setProcessando(true);
                                         const r = await fetch(
-                                          `http://localhost:3333/clinicas/${clinica.id}/unidades/${unidadePrecoId}/precos/${preco.procedimento.id}`,
+                                          `${API_URL}/clinicas/${clinica.id}/unidades/${unidadePrecoId}/precos/${preco.procedimento.id}`,
                                           { method: "DELETE" }
                                         );
                                         const d = await r.json();
@@ -1233,7 +1236,7 @@ export default function ClinicaPage() {
                 try {
                   setProcessando(true);
                   const procedimentoIds = clinica.precos.filter((p) => selecionados.includes(p.id)).map((p) => p.procedimento.id);
-                  const r = await fetch(`http://localhost:3333/clinicas/${clinica.id}/precos/lote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ procedimentoIds, operacao: operacaoLote, valor: numero(valorLote) }) });
+                  const r = await fetch(`${API_URL}/clinicas/${clinica.id}/precos/lote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ procedimentoIds, operacao: operacaoLote, valor: numero(valorLote) }) });
                   const d = await r.json();
                   if (!r.ok) throw new Error(d.erro || "Não foi possível alterar os preços.");
                   window.location.reload();
@@ -1325,7 +1328,7 @@ export default function ClinicaPage() {
                 {previewExcel && <PreviaImportacaoExcel key={previewExcel.previewId || "previa"} preview={previewExcel}
                   onProcessando={setProcessando}
                   onAtualizarClinica={async () => {
-                    const resposta = await fetch(`http://localhost:3333/clinicas/${clinica.id}`, { cache: "no-store" });
+                    const resposta = await fetch(`${API_URL}/clinicas/${clinica.id}`, { cache: "no-store" });
                     const dados = await resposta.json();
                     if (!resposta.ok) throw new Error(dados.erro || "Não foi possível atualizar a tabela.");
                     setClinica(dados);
@@ -1483,7 +1486,7 @@ export default function ClinicaPage() {
                       try {
                         setProcessando(true);
                         const r = await fetch(
-                          `http://localhost:3333/clinicas/${clinica.id}/precos/importar`,
+                          `${API_URL}/clinicas/${clinica.id}/precos/importar`,
                           {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
@@ -1715,7 +1718,7 @@ export default function ClinicaPage() {
 
                     const salvar = async (confirmarMesmoAssim: boolean) =>
                       fetch(
-                        `http://localhost:3333/procedimentos/${procedimentoEditando.id}`,
+                        `${API_URL}/procedimentos/${procedimentoEditando.id}`,
                         {
                           method: "PATCH",
                           headers: { "Content-Type": "application/json" },
@@ -2025,7 +2028,7 @@ export default function ClinicaPage() {
                       try {
                         setProcessando(true);
 
-                        const criar = await fetch("http://localhost:3333/procedimentos", {
+                        const criar = await fetch(`${API_URL}/procedimentos`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
@@ -2074,7 +2077,7 @@ export default function ClinicaPage() {
                         }
 
                         const vincular = await fetch(
-                          `http://localhost:3333/clinicas/${clinica.id}/precos/${procedimentoCriado.id}`,
+                          `${API_URL}/clinicas/${clinica.id}/precos/${procedimentoCriado.id}`,
                           {
                             method: "PUT",
                             headers: { "Content-Type": "application/json" },
@@ -2242,7 +2245,7 @@ export default function ClinicaPage() {
                       try {
                         setProcessando(true);
                         const r = await fetch(
-                          `http://localhost:3333/procedimentos/${p.id}`,
+                          `${API_URL}/procedimentos/${p.id}`,
                           { method: "DELETE" }
                         );
                         const d = await r.json();
@@ -2294,7 +2297,7 @@ export default function ClinicaPage() {
                 try {
                   setProcessando(true);
                   for (const procedimentoId of selecionadosAdicionar) {
-                    const r = await fetch(`http://localhost:3333/clinicas/${clinica.id}/precos/${procedimentoId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ valorPaciente: 0, valorRepasse: 0 }) });
+                    const r = await fetch(`${API_URL}/clinicas/${clinica.id}/precos/${procedimentoId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ valorPaciente: 0, valorRepasse: 0 }) });
                     const d = await r.json(); if (!r.ok) throw new Error(d.erro || "Não foi possível adicionar procedimento.");
                   }
                   window.location.reload();
@@ -2498,7 +2501,7 @@ function PreviaImportacaoExcel({ preview: previewOriginal, onProcessando, onAtua
     onProcessando(true);
     setErroConfirmacao("");
     try {
-      const resposta = await fetch(`http://localhost:3333/clinicas/${preview.clinica.id}/precos/importar-excel/confirmar`, {
+      const resposta = await fetch(`${API_URL}/clinicas/${preview.clinica.id}/precos/importar-excel/confirmar`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ previewId: preview.previewId, substituirExistentes: substituir,
           registros: registrosSelecionados.map((registro) => ({
@@ -2857,7 +2860,7 @@ function LocalizarProcedimentoExcel({ previewId, clinicaId, registro, onCancelar
     const timeout = window.setTimeout(() => controle.abort(), 30000);
     try {
       const query = new URLSearchParams({ previewId, busca: termo.trim() });
-      const resposta = await fetch(`http://localhost:3333/clinicas/${clinicaId}/precos/importar-excel/buscar?${query}`, { signal: controle.signal, cache: "no-store" });
+      const resposta = await fetch(`${API_URL}/clinicas/${clinicaId}/precos/importar-excel/buscar?${query}`, { signal: controle.signal, cache: "no-store" });
       const dados = await resposta.json();
       if (!resposta.ok) throw new Error(dados.erro || "Não foi possível buscar os procedimentos.");
       if (!Array.isArray(dados.candidatos) || typeof dados.total !== "number") throw new Error("A busca retornou uma resposta inválida.");
@@ -2882,7 +2885,7 @@ function LocalizarProcedimentoExcel({ previewId, clinicaId, registro, onCancelar
     requisicao.current = controle;
     const timeout = window.setTimeout(() => controle.abort(), 30000);
     try {
-      const resposta = await fetch(`http://localhost:3333/clinicas/${clinicaId}/precos/importar-excel/vincular`, {
+      const resposta = await fetch(`${API_URL}/clinicas/${clinicaId}/precos/importar-excel/vincular`, {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controle.signal,
         body: JSON.stringify({ previewId, linha: registro.linha, origem: candidato.origem, id: candidato.id, confirmarTussDivergente: divergente }),
       });

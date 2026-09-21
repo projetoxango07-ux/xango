@@ -6,6 +6,9 @@ import {
   useSearchParams,
 } from "next/navigation";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 const etapas = [
   "Paciente",
   "Procedimento",
@@ -356,9 +359,9 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
 
         const [resPacientes, resProcedimentos, resClinicas] =
           await Promise.all([
-            fetch("http://localhost:3333/pacientes"),
-            fetch("http://localhost:3333/procedimentos"),
-            fetch("http://localhost:3333/clinicas"),
+            fetch(`${API_URL}/pacientes`),
+            fetch(`${API_URL}/procedimentos`),
+            fetch(`${API_URL}/clinicas`),
           ]);
 
         if (!resPacientes.ok || !resProcedimentos.ok || !resClinicas.ok) {
@@ -454,7 +457,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         setCarregandoAtendimento(true);
 
         const resposta = await fetch(
-          `http://localhost:3333/atendimentos/${atendimentoId}`
+          `${API_URL}/atendimentos/${atendimentoId}`
         );
 
         const dados: AtendimentoExistenteApi & { erro?: string } =
@@ -468,7 +471,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
 
         try {
           const respostaPaciente = await fetch(
-            `http://localhost:3333/pacientes/${dados.paciente.id}`
+            `${API_URL}/pacientes/${dados.paciente.id}`
           );
 
           if (respostaPaciente.ok) {
@@ -743,7 +746,7 @@ async function selecionarUnidadeDoProcedimento(
     setCarregandoPrecoProcedimentoId(procedimentoId);
 
     const resposta = await fetch(
-      `http://localhost:3333/clinicas/${clinicaId}/unidades/${unidadeId}/precos`,
+      `${API_URL}/clinicas/${clinicaId}/unidades/${unidadeId}/precos`,
       { cache: "no-store" }
     );
     const dados = await resposta.json();
@@ -1559,8 +1562,8 @@ const contextoAprendizAtendimento = useMemo(() => {
       const idEfetivo = atendimentoPersistidoId;
 
       const url = idEfetivo
-        ? `http://localhost:3333/atendimentos/${idEfetivo}`
-        : "http://localhost:3333/atendimentos";
+        ? `${API_URL}/atendimentos/${idEfetivo}`
+        : `${API_URL}/atendimentos`;
 
       const resposta = await fetch(url, {
         method: idEfetivo ? "PUT" : "POST",
@@ -1688,7 +1691,7 @@ const contextoAprendizAtendimento = useMemo(() => {
   async function atualizarCadastroPacienteSelecionado(pacienteId: number) {
     try {
       setCarregandoCadastroPaciente(true);
-      const resposta = await fetch(`http://localhost:3333/pacientes/${pacienteId}`);
+      const resposta = await fetch(`${API_URL}/pacientes/${pacienteId}`);
       const dados = await resposta.json();
       if (!resposta.ok) throw new Error(dados.erro || "Não foi possível carregar o cadastro do paciente.");
 
@@ -1732,7 +1735,7 @@ const contextoAprendizAtendimento = useMemo(() => {
     }
 
     try {
-      const resposta = await fetch("http://localhost:3333/pacientes", {
+      const resposta = await fetch(`${API_URL}/pacientes`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1807,7 +1810,7 @@ const contextoAprendizAtendimento = useMemo(() => {
       setCarregandoDocumentos(true);
 
       const resposta = await fetch(
-        `http://localhost:3333/atendimentos/${idAtendimento}/documentos-financeiros`
+        `${API_URL}/atendimentos/${idAtendimento}/documentos-financeiros`
       );
 
       const dados = await resposta.json();
@@ -1842,7 +1845,7 @@ const contextoAprendizAtendimento = useMemo(() => {
       setEmitindoReciboGuiaId(guiaId);
 
       const resposta = await fetch(
-        `http://localhost:3333/guias/${guiaId}/recibo`,
+        `${API_URL}/guias/${guiaId}/recibo`,
         {
           method: "POST",
           headers: {
@@ -1893,7 +1896,7 @@ const contextoAprendizAtendimento = useMemo(() => {
       setProcessandoPagamento(true);
 
       const resposta = await fetch(
-        `http://localhost:3333/guias/${guiaId}/pagamentos`,
+        `${API_URL}/guias/${guiaId}/pagamentos`,
         {
           method: "POST",
           headers: {
@@ -1962,7 +1965,7 @@ const contextoAprendizAtendimento = useMemo(() => {
       setProcessandoEstorno(true);
 
       const resposta = await fetch(
-        `http://localhost:3333/guias/${guiaId}/estornos`,
+        `${API_URL}/guias/${guiaId}/estornos`,
         {
           method: "POST",
           headers: {

@@ -14,6 +14,9 @@ import {
   UsersRound,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type PacienteResumo = {
   id: number;
   codigoPublico: string | null;
@@ -163,7 +166,7 @@ export default function PacientesPage() {
       setErro("");
 
       const resposta = await fetch(
-        "http://localhost:3333/pacientes/resumo",
+        `${API_URL}/pacientes/resumo`,
         {
           cache: "no-store",
         }

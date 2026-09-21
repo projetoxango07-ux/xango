@@ -30,7 +30,7 @@ type PacienteDetalhe = {
   proximoAgendamento:Agendamento|null; agendamentosFuturos:Agendamento[]; atendimentos:Atendimento[];
 };
 
-const API="http://localhost:3333";
+const API = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
 const TIPOS=[
   ["PAI","Pai"],["MAE","Mãe"],["FILHO","Filho"],["FILHA","Filha"],["IRMAO","Irmão"],["IRMA","Irmã"],
   ["AVO","Avô"],["AVO_FEMININO","Avó"],["NETO","Neto"],["NETA","Neta"],["MARIDO","Marido"],

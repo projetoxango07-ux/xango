@@ -14,6 +14,9 @@ import {
   Stethoscope,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type ClinicaResumo = {
   id: number;
   nome: string;
@@ -98,7 +101,7 @@ export default function ClinicasPage() {
       setErro("");
 
       const resposta = await fetch(
-        "http://localhost:3333/clinicas/resumo",
+        `${API_URL}/clinicas/resumo`,
         { cache: "no-store" }
       );
 

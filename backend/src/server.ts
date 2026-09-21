@@ -17,7 +17,11 @@ const prisma = new PrismaClient({
 });
 
 const app = express();
-const PORT = 3333;
+const PORT = Number(process.env.PORT) || 3333;
+const HOST = process.env.HOST || "0.0.0.0";
+
+// O Render e outros provedores de nuvem ficam atrás de proxy reverso.
+app.set("trust proxy", 1);
 
 const uploadPlanilha = multer({
   storage: multer.memoryStorage(),
@@ -644,9 +648,15 @@ function autorizarRota(req: express.Request, res: express.Response, next: expres
 
 function corsPermitido(origin: string | undefined, callback: (erro: Error | null, permitir?: boolean) => void) {
   if (!origin) return callback(null, true);
-  const configurada = process.env.FRONTEND_URL;
-  if (configurada && origin === configurada) return callback(null, true);
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return callback(null, true);
+
+  const origem = origin.replace(/\/+$/, "");
+  const configurada = String(process.env.FRONTEND_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (configurada && origem === configurada) return callback(null, true);
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origem)) return callback(null, true);
+
   return callback(new Error("Origem não permitida pelo CORS."));
 }
 
@@ -656,6 +666,16 @@ app.use("/clinicas/:id/precos/importar-excel/confirmar", express.json({ limit: "
 // Relatos de problema podem incluir uma captura de tela em base64.
 app.use("/suporte/problemas", express.json({ limit: "6mb" }));
 app.use(express.json());
+
+// Endpoint público e leve para monitoramento da aplicação.
+// Não consulta o banco para evitar manter o PostgreSQL de homologação acordado sem necessidade.
+app.get("/health", (_req, res) => {
+  return res.json({
+    sistema: "Digna Conect",
+    api: "online",
+    status: "ok",
+  });
+});
 
 // ======================================================
 // AUTENTICAÇÃO - ROTAS PÚBLICAS
@@ -13284,8 +13304,8 @@ app.get("/relatorios/producao", async (req, res) => {
   }
 });
 
-app.listen(PORT, async () => {
-  console.log(`🚀 Digna Conect API rodando em http://localhost:${PORT}`);
+app.listen(PORT, HOST, async () => {
+  console.log(`🚀 Digna Conect API rodando em ${HOST}:${PORT}`);
 
   try {
     await garantirCodigosPublicosBase();

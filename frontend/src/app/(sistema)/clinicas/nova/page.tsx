@@ -18,6 +18,9 @@ import {
   WalletCards,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type UnidadeForm = {
   nome: string;
   usaEnderecoFiscal: boolean;
@@ -356,7 +359,7 @@ export default function NovaClinicaPage() {
         })),
       };
 
-      const resposta = await fetch("http://localhost:3333/clinicas", {
+      const resposta = await fetch(`${API_URL}/clinicas`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

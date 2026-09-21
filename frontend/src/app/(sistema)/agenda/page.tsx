@@ -15,6 +15,9 @@ import {
   WalletCards,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type AgendaRegistro = {
   itemGuiaId: number;
   atendimentoId: number;
@@ -235,7 +238,7 @@ export default function AgendaPage() {
       setErro("");
 
       const resposta = await fetch(
-        `http://localhost:3333/agenda?data=${encodeURIComponent(
+        `${API_URL}/agenda?data=${encodeURIComponent(
           data
         )}`,
         {

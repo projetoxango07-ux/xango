@@ -19,6 +19,9 @@ import {
   WalletCards,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type UnidadeForm = {
   id?: number;
   nome: string;
@@ -227,7 +230,7 @@ export default function EditarClinicaPage() {
           setErro("");
 
           const resposta = await fetch(
-            `http://localhost:3333/clinicas/${clinicaId}`,
+            `${API_URL}/clinicas/${clinicaId}`,
             { cache: "no-store" }
           );
 
@@ -531,7 +534,7 @@ export default function EditarClinicaPage() {
       setSalvando(true);
 
       const respostaClinica = await fetch(
-        `http://localhost:3333/clinicas/${clinicaId}`,
+        `${API_URL}/clinicas/${clinicaId}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -554,7 +557,7 @@ export default function EditarClinicaPage() {
       }
 
       const respostaPrecificacao = await fetch(
-        `http://localhost:3333/clinicas/${clinicaId}/precificacao`,
+        `${API_URL}/clinicas/${clinicaId}/precificacao`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -596,8 +599,8 @@ export default function EditarClinicaPage() {
         };
 
         const url = unidade.id
-          ? `http://localhost:3333/clinicas/${clinicaId}/unidades/${unidade.id}`
-          : `http://localhost:3333/clinicas/${clinicaId}/unidades`;
+          ? `${API_URL}/clinicas/${clinicaId}/unidades/${unidade.id}`
+          : `${API_URL}/clinicas/${clinicaId}/unidades`;
 
         const respostaUnidade = await fetch(url, {
           method: unidade.id ? "PATCH" : "POST",

@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+
+
 type Procedimento = {
   id: number;
   nome: string;
@@ -323,7 +326,7 @@ export default function AtendimentosPage() {
         setErro("");
 
         const resposta = await fetch(
-          "http://localhost:3333/atendimentos"
+          `${API_URL}/atendimentos`
         );
 
         if (!resposta.ok) {
@@ -921,7 +924,7 @@ const atendimentosFiltrados = useMemo(() => {
                     try {
                       setProcessandoCancelamento(true);
                       const resposta = await fetch(
-                        `http://localhost:3333/atendimentos/${cancelando.id}/cancelar`,
+                        `${API_URL}/atendimentos/${cancelando.id}/cancelar`,
                         {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
