@@ -16,13 +16,12 @@ import {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
 
-
 type PacienteResumo = {
   id: number;
   codigoPublico: string | null;
   nome: string;
-  cpf: string;
-  telefone: string;
+  cpf: string | null;
+  telefone: string | null;
   email: string | null;
   dataNascimento: string | null;
   beneficioAtivo: boolean;
@@ -66,7 +65,11 @@ type FiltroPaciente =
   | "Pendências"
   | "Cadastro incompleto";
 
-function formatarCpf(cpf: string) {
+function formatarCpf(cpf: string | null) {
+  if (!cpf) {
+    return "Não informado";
+  }
+
   const numeros = cpf.replace(/\D/g, "");
 
   if (numeros.length !== 11) {
@@ -79,7 +82,11 @@ function formatarCpf(cpf: string) {
   )}.${numeros.slice(6, 9)}-${numeros.slice(9)}`;
 }
 
-function formatarTelefone(telefone: string) {
+function formatarTelefone(telefone: string | null) {
+  if (!telefone) {
+    return "Não informado";
+  }
+
   const numeros = telefone.replace(/\D/g, "");
 
   if (numeros.length === 11) {
@@ -268,7 +275,7 @@ export default function PacientesPage() {
           paciente.cpf,
           paciente.telefone,
         ].some((valor) =>
-          valor
+          (valor || "")
             .replace(/\D/g, "")
             .includes(termoNumerico)
         )
@@ -305,7 +312,16 @@ export default function PacientesPage() {
   function abrirPaciente(
     paciente: PacienteResumo
   ) {
-    router.push(`/pacientes/${paciente.id}`);
+    if (paciente.ultimoAtendimento) {
+      router.push(
+        `/atendimentos/${paciente.ultimoAtendimento.id}?modo=revisao`
+      );
+      return;
+    }
+
+    router.push(
+      `/atendimentos/novo?pacienteId=${paciente.id}`
+    );
   }
 
   return (
