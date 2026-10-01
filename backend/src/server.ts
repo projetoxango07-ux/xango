@@ -8212,7 +8212,7 @@ async function resolverPacienteDoOrcamento(body: any) {
     | {
         id: number;
         nome: string;
-        telefone: string;
+        telefone: string | null;
       }
     | null = null;
 
@@ -8241,7 +8241,7 @@ async function resolverPacienteDoOrcamento(body: any) {
         .toLocaleUpperCase("pt-BR");
 
   const telefonePaciente = String(
-    paciente ? paciente.telefone : body.telefonePaciente || ""
+    paciente?.telefone || body.telefonePaciente || ""
   ).replace(/\D/g, "");
 
   if (!nomePaciente || nomePaciente.length < 2) {
@@ -10661,6 +10661,16 @@ app.post("/guias/:id/recibo", async (req, res) => {
       });
     }
 
+    const cpfPacienteRecibo = String(
+      guia.atendimento.paciente.cpf || ""
+    ).replace(/\D/g, "");
+
+    if (cpfPacienteRecibo.length !== 11) {
+      return res.status(400).json({
+        erro: "O paciente não possui CPF válido cadastrado. Complete o cadastro antes de emitir o recibo.",
+      });
+    }
+
     const procedimentos = guia.itens
       .filter((item) => item.status !== "CANCELADO")
       .map((item) => item.procedimento.nome)
@@ -10702,7 +10712,7 @@ app.post("/guias/:id/recibo", async (req, res) => {
           valorEstornado: valorJaEstornado,
 
           nomePaciente: guia.atendimento.paciente.nome,
-          cpfPaciente: guia.atendimento.paciente.cpf,
+          cpfPaciente: cpfPacienteRecibo,
           nomeClinica: guia.clinica.nome,
           documentoClinica: guia.clinica.documento,
           nomeOrganizacao: organizacao.nomeFantasia,
@@ -12648,8 +12658,8 @@ app.get("/relatorios/financeiros", async (req, res) => {
       codigoAtendimento: string | null;
       pacienteId: number;
       paciente: string;
-      cpf: string;
-      telefone: string;
+      cpf: string | null;
+      telefone: string | null;
       clinicaId: number;
       clinica: string;
     };
@@ -12718,12 +12728,15 @@ app.get("/relatorios/financeiros", async (req, res) => {
           item.codigoVoucher || "",
           item.codigoAtendimento || "",
           item.paciente,
-          item.cpf,
+          item.cpf || "",
           item.clinica,
           item.formaLabel,
           item.observacao || "",
         ].join(" ").toLocaleLowerCase("pt-BR");
-        return campos.includes(termo) || (!!numerico && item.cpf.includes(numerico));
+        return (
+          campos.includes(termo) ||
+          (!!numerico && (item.cpf || "").includes(numerico))
+        );
       });
     }
 
@@ -13004,7 +13017,7 @@ app.get("/relatorios/producao", async (req, res) => {
       codigoAtendimento: string | null;
       pacienteId: number;
       paciente: string;
-      cpf: string;
+      cpf: string | null;
       clinicaId: number;
       clinica: string;
       unidade: string | null;

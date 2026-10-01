@@ -318,9 +318,9 @@ model Paciente {
   codigoPublico        String?   @unique
   nome                 String
   nomeSocial           String?
-  cpf                  String    @unique
+  cpf                  String?   @unique
   rg                   String?
-  telefone             String
+  telefone             String?
   telefoneSecundario   String?
   email                String?
   dataNascimento       DateTime?
@@ -352,6 +352,7 @@ model Paciente {
 
   atendimentos         Atendimento[]
   orcamentos           Orcamento[]
+  importacoesLegadas    PacienteImportacaoLegada[]
 
   vinculosComoOrigem   VinculoFamiliar[] @relation("VinculoPacienteOrigem")
   vinculosComoDestino  VinculoFamiliar[] @relation("VinculoPacienteDestino")
@@ -360,6 +361,18 @@ model Paciente {
   atualizadoEm         DateTime  @updatedAt
 }
 
+model PacienteImportacaoLegada {
+  id             Int      @id @default(autoincrement())
+  pacienteId     Int
+  paciente       Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  sistema        String
+  chaveExterna   String
+  dadosOriginais Json
+  criadoEm       DateTime @default(now())
+
+  @@unique([sistema, chaveExterna])
+  @@index([pacienteId])
+}
 model VinculoFamiliar {
   id                Int                 @id @default(autoincrement())
 

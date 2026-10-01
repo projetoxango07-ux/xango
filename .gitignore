@@ -50,3 +50,13 @@ backend/.agents/
 backend/.claude/
 backend/.windsurf/
 backend/skills-lock.json
+
+# Dados de importacao - nao versionar
+backend/scripts/Digna_Pacientes_*.csv
+backend/scripts/Digna_Conect_Base_Final_*.xlsx
+backend/scripts/dados_pacientes_amplimed_*.csv
+
+# Relatorios de importacao e backups - nao versionar
+backend/scripts/importacao-pacientes-*.json
+backend/scripts/revisao-duplicidades-amplimed.json
+*.dump
