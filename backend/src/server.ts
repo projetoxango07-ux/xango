@@ -6704,36 +6704,60 @@ app.get("/pacientes/resumo", async (_req, res) => {
   try {
     const agora = new Date();
 
-    const pacientes = await prisma.paciente.findMany({
-      include: {
-        empresa: true,
-        atendimentos: {
-          orderBy: {
-            criadoEm: "desc",
-          },
-          include: {
-            guias: {
-              include: {
-                itens: {
-                  include: {
-                    procedimento: true,
+    // Carrega os pacientes em lotes para evitar exceder o limite
+    // de parâmetros do PostgreSQL nas consultas relacionais do Prisma.
+    const TAMANHO_LOTE = 500;
+    const pacientes: any[] = [];
+
+    let offset = 0;
+
+    while (true) {
+      const lote = await prisma.paciente.findMany({
+        skip: offset,
+        take: TAMANHO_LOTE,
+        include: {
+          empresa: true,
+          atendimentos: {
+            orderBy: {
+              criadoEm: "desc",
+            },
+            include: {
+              guias: {
+                include: {
+                  itens: {
+                    include: {
+                      procedimento: true,
+                    },
                   },
+                  pagamentos: true,
+                  estornos: true,
                 },
-                pagamentos: true,
-                estornos: true,
               },
             },
           },
         },
-      },
-      orderBy: {
-        nome: "asc",
-      },
-    });
+        orderBy: [
+          {
+            nome: "asc",
+          },
+          {
+            id: "asc",
+          },
+        ],
+      });
+
+      pacientes.push(...lote);
+
+      if (lote.length < TAMANHO_LOTE) {
+        break;
+      }
+
+      offset += TAMANHO_LOTE;
+    }
 
     const resultado = pacientes.map((paciente) => {
       const atendimentosValidos = paciente.atendimentos.filter(
-        (atendimento) =>
+        (atendimento: any) =>
           atendimento.organizacaoId === organizacaoAtualId() ||
           atendimento.organizacaoId === null
       );
@@ -6741,18 +6765,18 @@ app.get("/pacientes/resumo", async (_req, res) => {
       const ultimoAtendimento = atendimentosValidos[0] || null;
 
       const agendamentosFuturos = atendimentosValidos
-        .flatMap((atendimento) =>
+        .flatMap((atendimento: any) =>
           atendimento.guias
-            .filter((guia) => guia.status !== "CANCELADA")
-            .flatMap((guia) =>
+            .filter((guia: any) => guia.status !== "CANCELADA")
+            .flatMap((guia: any) =>
               guia.itens
                 .filter(
-                  (item) =>
+                  (item: any) =>
                     item.status !== "CANCELADO" &&
                     item.dataAgendamento &&
                     item.dataAgendamento >= agora
                 )
-                .map((item) => ({
+                .map((item: any) => ({
                   atendimentoId: atendimento.id,
                   atendimentoCodigo:
                     atendimento.codigoPublico || "Código pendente",
@@ -6764,13 +6788,12 @@ app.get("/pacientes/resumo", async (_req, res) => {
             )
         )
         .sort(
-          (a, b) =>
+          (a: any, b: any) =>
             new Date(a.dataAgendamento!).getTime() -
             new Date(b.dataAgendamento!).getTime()
         );
 
-      const proximoAgendamento =
-        agendamentosFuturos[0] || null;
+      const proximoAgendamento = agendamentosFuturos[0] || null;
 
       let possuiPendenciaFinanceira = false;
       let saldoPendente = 0;
@@ -6782,7 +6805,7 @@ app.get("/pacientes/resumo", async (_req, res) => {
           }
 
           const possuiItemAtivo = guia.itens.some(
-            (item) => item.status !== "CANCELADO"
+            (item: any) => item.status !== "CANCELADO"
           );
 
           if (!possuiItemAtivo) {
@@ -6792,31 +6815,22 @@ app.get("/pacientes/resumo", async (_req, res) => {
           const valorFinal = Number(guia.valorFinal);
 
           const totalPago = guia.pagamentos.reduce(
-            (total, pagamento) =>
+            (total: number, pagamento: any) =>
               total + Number(pagamento.valor),
             0
           );
 
           const totalEstornado = guia.estornos.reduce(
-            (total, estorno) =>
+            (total: number, estorno: any) =>
               total + Number(estorno.valor),
             0
           );
 
-          const pagoLiquido = Math.max(
-            totalPago - totalEstornado,
-            0
-          );
+          const pagoLiquido = Math.max(totalPago - totalEstornado, 0);
 
-          const saldo = Math.max(
-            valorFinal - pagoLiquido,
-            0
-          );
+          const saldo = Math.max(valorFinal - pagoLiquido, 0);
 
-          if (
-            saldo > 0 ||
-            guia.status === "ESTORNO_PENDENTE"
-          ) {
+          if (saldo > 0 || guia.status === "ESTORNO_PENDENTE") {
             possuiPendenciaFinanceira = true;
             saldoPendente += saldo;
           }
@@ -6852,11 +6866,9 @@ app.get("/pacientes/resumo", async (_req, res) => {
           ? {
               id: ultimoAtendimento.id,
               codigoPublico:
-                ultimoAtendimento.codigoPublico ||
-                "Código pendente",
+                ultimoAtendimento.codigoPublico || "Código pendente",
               criadoEm: ultimoAtendimento.criadoEm,
-              status:
-                statusOperacionalDashboard(ultimoAtendimento),
+              status: statusOperacionalDashboard(ultimoAtendimento),
             }
           : null,
         proximoAgendamento,
@@ -6869,10 +6881,7 @@ app.get("/pacientes/resumo", async (_req, res) => {
 
     return res.json(resultado);
   } catch (erro) {
-    console.error(
-      "Erro ao carregar visão de pacientes:",
-      erro
-    );
+    console.error("Erro ao carregar visão de pacientes:", erro);
 
     return res.status(500).json({
       erro: "Não foi possível carregar os pacientes.",
