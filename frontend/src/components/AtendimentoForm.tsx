@@ -2163,7 +2163,6 @@ const contextoAprendizAtendimento = (() => {
                     type="button"
                     onClick={() => {
                       setPacienteSelecionado(paciente);
-                      void atualizarCadastroPacienteSelecionado(paciente.id);
                     }}
                     className={`flex w-full items-center justify-between border-b border-xango-border px-4 py-3 text-left last:border-b-0 ${
                       selecionado

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   CalendarClock,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleDollarSign,
   RefreshCw,
@@ -14,7 +15,11 @@ import {
   UsersRound,
 } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ||
+  "http://localhost:3333";
+
+const POR_PAGINA = 50;
 
 type PacienteResumo = {
   id: number;
@@ -65,6 +70,38 @@ type FiltroPaciente =
   | "Pendências"
   | "Cadastro incompleto";
 
+type RespostaPacientes = {
+  pacientes: PacienteResumo[];
+  paginacao: {
+    pagina: number;
+    porPagina: number;
+    total: number;
+    totalPaginas: number;
+  };
+  resumo: {
+    total: number;
+    comAgendamento: number;
+    pendencias: number;
+    incompletos: number;
+  };
+  erro?: string;
+};
+
+function filtroParaApi(
+  filtro: FiltroPaciente
+) {
+  switch (filtro) {
+    case "Com agendamento":
+      return "agendamento";
+    case "Pendências":
+      return "pendencias";
+    case "Cadastro incompleto":
+      return "incompleto";
+    default:
+      return "todos";
+  }
+}
+
 function formatarCpf(cpf: string | null) {
   if (!cpf) {
     return "Não informado";
@@ -82,7 +119,9 @@ function formatarCpf(cpf: string | null) {
   )}.${numeros.slice(6, 9)}-${numeros.slice(9)}`;
 }
 
-function formatarTelefone(telefone: string | null) {
+function formatarTelefone(
+  telefone: string | null
+) {
   if (!telefone) {
     return "Não informado";
   }
@@ -90,17 +129,21 @@ function formatarTelefone(telefone: string | null) {
   const numeros = telefone.replace(/\D/g, "");
 
   if (numeros.length === 11) {
-    return `(${numeros.slice(0, 2)}) ${numeros.slice(
-      2,
+    return `(${numeros.slice(
+      0,
+      2
+    )}) ${numeros.slice(2, 7)}-${numeros.slice(
       7
-    )}-${numeros.slice(7)}`;
+    )}`;
   }
 
   if (numeros.length === 10) {
-    return `(${numeros.slice(0, 2)}) ${numeros.slice(
-      2,
+    return `(${numeros.slice(
+      0,
+      2
+    )}) ${numeros.slice(2, 6)}-${numeros.slice(
       6
-    )}-${numeros.slice(6)}`;
+    )}`;
   }
 
   return telefone;
@@ -121,7 +164,8 @@ function formatarData(data: string | null) {
 function formatarAgendamento(
   paciente: PacienteResumo
 ) {
-  const agendamento = paciente.proximoAgendamento;
+  const agendamento =
+    paciente.proximoAgendamento;
 
   if (!agendamento) {
     return null;
@@ -167,147 +211,123 @@ export default function PacientesPage() {
   const [filtro, setFiltro] =
     useState<FiltroPaciente>("Todos");
 
-  async function carregarPacientes() {
-    try {
-      setCarregando(true);
-      setErro("");
+  const [pagina, setPagina] = useState(1);
 
-      const resposta = await fetch(
-        `${API_URL}/pacientes/resumo`,
-        {
-          cache: "no-store",
-        }
-      );
+  const [chaveAtualizacao, setChaveAtualizacao] =
+    useState(0);
 
-      const resultado = await resposta.json();
+  const [paginacao, setPaginacao] = useState({
+    pagina: 1,
+    porPagina: POR_PAGINA,
+    total: 0,
+    totalPaginas: 1,
+  });
 
-      if (!resposta.ok) {
-        throw new Error(
-          resultado.erro ||
-            "Não foi possível carregar os pacientes."
-        );
-      }
-
-      setPacientes(resultado);
-    } catch (erro) {
-      console.error(
-        "Erro ao carregar pacientes:",
-        erro
-      );
-
-      setErro(
-        "Não foi possível carregar os pacientes."
-      );
-    } finally {
-      setCarregando(false);
-    }
-  }
+  const [resumo, setResumo] = useState({
+    total: 0,
+    comAgendamento: 0,
+    pendencias: 0,
+    incompletos: 0,
+  });
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void carregarPacientes();
-    }, 0);
+    const controller = new AbortController();
+
+    const timer = window.setTimeout(
+      async () => {
+        try {
+          setCarregando(true);
+          setErro("");
+
+          const parametros =
+            new URLSearchParams({
+              pagina: String(pagina),
+              porPagina: String(POR_PAGINA),
+              filtro: filtroParaApi(filtro),
+            });
+
+          const termo = busca.trim();
+
+          if (termo) {
+            parametros.set("busca", termo);
+          }
+
+          const resposta = await fetch(
+            `${API_URL}/pacientes/resumo?${parametros.toString()}`,
+            {
+              cache: "no-store",
+              signal: controller.signal,
+            }
+          );
+
+          const resultado: RespostaPacientes =
+            await resposta.json();
+
+          if (!resposta.ok) {
+            throw new Error(
+              resultado.erro ||
+                "Não foi possível carregar os pacientes."
+            );
+          }
+
+          setPacientes(
+            Array.isArray(resultado.pacientes)
+              ? resultado.pacientes
+              : []
+          );
+
+          setPaginacao(resultado.paginacao);
+          setResumo(resultado.resumo);
+
+          if (
+            resultado.paginacao.pagina !==
+            pagina
+          ) {
+            setPagina(
+              resultado.paginacao.pagina
+            );
+          }
+        } catch (erroCarregamento) {
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          console.error(
+            "Erro ao carregar pacientes:",
+            erroCarregamento
+          );
+
+          setErro(
+            erroCarregamento instanceof Error
+              ? erroCarregamento.message
+              : "Não foi possível carregar os pacientes."
+          );
+        } finally {
+          if (!controller.signal.aborted) {
+            setCarregando(false);
+          }
+        }
+      },
+      busca.trim() ? 300 : 0
+    );
 
     return () => {
       window.clearTimeout(timer);
+      controller.abort();
     };
-  }, []);
+  }, [
+    busca,
+    filtro,
+    pagina,
+    chaveAtualizacao,
+  ]);
 
-  const pacientesFiltrados = useMemo(() => {
-    const termo = busca
-      .trim()
-      .toLowerCase();
-
-    return pacientes.filter((paciente) => {
-      if (
-        filtro === "Com agendamento" &&
-        !paciente.proximoAgendamento
-      ) {
-        return false;
-      }
-
-      if (
-        filtro === "Pendências" &&
-        !paciente.financeiro.possuiPendencia
-      ) {
-        return false;
-      }
-
-      if (
-        filtro === "Cadastro incompleto" &&
-        paciente.cadastro.completo
-      ) {
-        return false;
-      }
-
-      if (!termo) {
-        return true;
-      }
-
-      const texto = [
-        paciente.codigoPublico,
-        paciente.nome,
-        paciente.cpf,
-        formatarCpf(paciente.cpf),
-        paciente.telefone,
-        formatarTelefone(paciente.telefone),
-        paciente.email,
-        paciente.empresa?.nome,
-        paciente.ultimoAtendimento
-          ?.codigoPublico,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      const termoNumerico = termo.replace(
-        /\D/g,
-        ""
-      );
-
-      if (texto.includes(termo)) {
-        return true;
-      }
-
-      if (
-        termoNumerico &&
-        [
-          paciente.cpf,
-          paciente.telefone,
-        ].some((valor) =>
-          (valor || "")
-            .replace(/\D/g, "")
-            .includes(termoNumerico)
-        )
-      ) {
-        return true;
-      }
-
-      return false;
-    });
-  }, [pacientes, busca, filtro]);
-
-  const resumo = useMemo(
-    () => ({
-      total: pacientes.length,
-      comAgendamento: pacientes.filter(
-        (paciente) =>
-          Boolean(
-            paciente.proximoAgendamento
-          )
-      ).length,
-      pendencias: pacientes.filter(
-        (paciente) =>
-          paciente.financeiro
-            .possuiPendencia
-      ).length,
-      incompletos: pacientes.filter(
-        (paciente) =>
-          !paciente.cadastro.completo
-      ).length,
-    }),
-    [pacientes]
-  );
+  function aplicarFiltro(
+    novoFiltro: FiltroPaciente
+  ) {
+    setFiltro(novoFiltro);
+    setPagina(1);
+  }
 
   function abrirPaciente(
     paciente: PacienteResumo
@@ -324,6 +344,18 @@ export default function PacientesPage() {
     );
   }
 
+  const primeiroResultado =
+    paginacao.total === 0
+      ? 0
+      : (paginacao.pagina - 1) *
+          paginacao.porPagina +
+        1;
+
+  const ultimoResultado = Math.min(
+    paginacao.pagina * paginacao.porPagina,
+    paginacao.total
+  );
+
   return (
     <div className="mx-auto max-w-375">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -333,7 +365,8 @@ export default function PacientesPage() {
           </h2>
 
           <p className="mt-1 text-sm text-xango-muted">
-            Consulte cadastros, próximos agendamentos e pendências.
+            Consulte cadastros, próximos
+            agendamentos e pendências.
           </p>
         </div>
 
@@ -341,7 +374,9 @@ export default function PacientesPage() {
           <button
             type="button"
             onClick={() =>
-              void carregarPacientes()
+              setChaveAtualizacao(
+                (atual) => atual + 1
+              )
             }
             disabled={carregando}
             className="flex items-center gap-2 rounded-md border border-xango-border bg-white px-3 py-2 text-xs font-semibold text-xango-primary transition hover:bg-xango-background disabled:opacity-50"
@@ -384,13 +419,15 @@ export default function PacientesPage() {
         <ResumoCard
           icone={<UsersRound size={18} />}
           valor={
-            carregando
+            carregando && resumo.total === 0
               ? "—"
               : String(resumo.total)
           }
           titulo="Pacientes"
           ativo={filtro === "Todos"}
-          onClick={() => setFiltro("Todos")}
+          onClick={() =>
+            aplicarFiltro("Todos")
+          }
         />
 
         <ResumoCard
@@ -398,7 +435,9 @@ export default function PacientesPage() {
             <CalendarClock size={18} />
           }
           valor={
-            carregando
+            carregando &&
+            resumo.comAgendamento === 0 &&
+            resumo.total === 0
               ? "—"
               : String(
                   resumo.comAgendamento
@@ -406,11 +445,10 @@ export default function PacientesPage() {
           }
           titulo="Com agendamento"
           ativo={
-            filtro ===
-            "Com agendamento"
+            filtro === "Com agendamento"
           }
           onClick={() =>
-            setFiltro("Com agendamento")
+            aplicarFiltro("Com agendamento")
           }
         />
 
@@ -419,16 +457,16 @@ export default function PacientesPage() {
             <CircleDollarSign size={18} />
           }
           valor={
-            carregando
+            carregando &&
+            resumo.pendencias === 0 &&
+            resumo.total === 0
               ? "—"
               : String(resumo.pendencias)
           }
           titulo="Pendências"
-          ativo={
-            filtro === "Pendências"
-          }
+          ativo={filtro === "Pendências"}
           onClick={() =>
-            setFiltro("Pendências")
+            aplicarFiltro("Pendências")
           }
         />
 
@@ -437,7 +475,9 @@ export default function PacientesPage() {
             <AlertCircle size={18} />
           }
           valor={
-            carregando
+            carregando &&
+            resumo.incompletos === 0 &&
+            resumo.total === 0
               ? "—"
               : String(resumo.incompletos)
           }
@@ -447,7 +487,7 @@ export default function PacientesPage() {
             "Cadastro incompleto"
           }
           onClick={() =>
-            setFiltro(
+            aplicarFiltro(
               "Cadastro incompleto"
             )
           }
@@ -463,9 +503,10 @@ export default function PacientesPage() {
         <input
           type="text"
           value={busca}
-          onChange={(event) =>
-            setBusca(event.target.value)
-          }
+          onChange={(event) => {
+            setBusca(event.target.value);
+            setPagina(1);
+          }}
           placeholder="Pesquisar por nome, CPF, telefone, e-mail ou código PAC..."
           className="w-full rounded-md border border-xango-border bg-white py-3 pl-10 pr-4 text-sm text-xango-text outline-none transition focus:border-xango-primary"
         />
@@ -482,7 +523,7 @@ export default function PacientesPage() {
               <p className="mt-1 text-xs text-xango-muted">
                 {carregando
                   ? "Carregando..."
-                  : `${pacientesFiltrados.length} resultado(s)`}
+                  : `${paginacao.total} resultado(s)`}
               </p>
             </div>
 
@@ -490,7 +531,7 @@ export default function PacientesPage() {
               <button
                 type="button"
                 onClick={() =>
-                  setFiltro("Todos")
+                  aplicarFiltro("Todos")
                 }
                 className="text-xs font-semibold text-xango-primary hover:underline"
               >
@@ -545,185 +586,182 @@ export default function PacientesPage() {
               )}
 
               {!carregando &&
-                pacientesFiltrados.map(
-                  (paciente) => {
-                    const agendamento =
-                      formatarAgendamento(
-                        paciente
-                      );
+                pacientes.map((paciente) => {
+                  const agendamento =
+                    formatarAgendamento(
+                      paciente
+                    );
 
-                    return (
-                      <tr
-                        key={paciente.id}
-                        onClick={() =>
-                          abrirPaciente(
-                            paciente
-                          )
-                        }
-                        className="cursor-pointer transition hover:bg-xango-background/60"
-                      >
-                        <td className="px-5 py-4 align-top">
-                          <p className="font-semibold text-xango-text">
-                            {paciente.nome}
-                          </p>
+                  return (
+                    <tr
+                      key={paciente.id}
+                      onClick={() =>
+                        abrirPaciente(
+                          paciente
+                        )
+                      }
+                      className="cursor-pointer transition hover:bg-xango-background/60"
+                    >
+                      <td className="px-5 py-4 align-top">
+                        <p className="font-semibold text-xango-text">
+                          {paciente.nome}
+                        </p>
 
-                          <p className="mt-1 text-xs font-medium text-xango-primary">
-                            {paciente.codigoPublico ||
-                              "Código pendente"}
-                          </p>
+                        <p className="mt-1 text-xs font-medium text-xango-primary">
+                          {paciente.codigoPublico ||
+                            "Código pendente"}
+                        </p>
 
-                          <p className="mt-1 text-xs text-xango-muted">
-                            CPF{" "}
-                            {formatarCpf(
-                              paciente.cpf
-                            )}
-                          </p>
+                        <p className="mt-1 text-xs text-xango-muted">
+                          CPF{" "}
+                          {formatarCpf(
+                            paciente.cpf
+                          )}
+                        </p>
 
-                          {paciente.beneficioAtivo &&
-                            paciente.empresa && (
-                              <span className="mt-2 inline-flex rounded-full bg-violet-100 px-2 py-1 text-[11px] font-semibold text-violet-800">
-                                {
-                                  paciente
-                                    .empresa.nome
-                                }
-                              </span>
-                            )}
-                        </td>
-
-                        <td className="px-4 py-4 align-top">
-                          <p className="text-sm text-xango-text">
-                            {formatarTelefone(
-                              paciente.telefone
-                            )}
-                          </p>
-
-                          <p className="mt-1 text-xs text-xango-muted">
-                            {paciente.email ||
-                              "E-mail não informado"}
-                          </p>
-                        </td>
-
-                        <td className="px-4 py-4 align-top">
-                          <div className="flex items-center gap-2">
-                            {paciente.cadastro
-                              .completo ? (
-                              <CheckCircle2
-                                size={15}
-                                className="text-emerald-600"
-                              />
-                            ) : (
-                              <AlertCircle
-                                size={15}
-                                className="text-amber-600"
-                              />
-                            )}
-
-                            <span
-                              className={`text-sm font-semibold ${
-                                paciente.cadastro
-                                  .completo
-                                  ? "text-emerald-700"
-                                  : "text-amber-700"
-                              }`}
-                            >
+                        {paciente.beneficioAtivo &&
+                          paciente.empresa && (
+                            <span className="mt-2 inline-flex rounded-full bg-violet-100 px-2 py-1 text-[11px] font-semibold text-violet-800">
                               {
                                 paciente
-                                  .cadastro
-                                  .percentual
+                                  .empresa.nome
                               }
-                              %
-                            </span>
-                          </div>
-
-                          <p className="mt-1 text-xs text-xango-muted">
-                            {paciente.cadastro
-                              .completo
-                              ? "Completo"
-                              : "Incompleto"}
-                          </p>
-                        </td>
-
-                        <td className="px-4 py-4 align-top">
-                          {agendamento ? (
-                            <>
-                              <p className="text-sm font-medium text-xango-text">
-                                {agendamento}
-                              </p>
-
-                              <p className="mt-1 text-xs text-xango-muted">
-                                {
-                                  paciente
-                                    .proximoAgendamento
-                                    ?.procedimento
-                                }
-                              </p>
-                            </>
-                          ) : (
-                            <p className="text-sm text-xango-muted">
-                              Sem agendamento futuro
-                            </p>
-                          )}
-                        </td>
-
-                        <td className="px-4 py-4 align-top">
-                          {paciente.financeiro
-                            .possuiPendencia ? (
-                            <>
-                              <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
-                                Pendência
-                              </span>
-
-                              {paciente.financeiro
-                                .saldoPendente >
-                                0 && (
-                                <p className="mt-1 text-xs text-xango-muted">
-                                  {moeda(
-                                    paciente
-                                      .financeiro
-                                      .saldoPendente
-                                  )}
-                                </p>
-                              )}
-                            </>
-                          ) : (
-                            <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
-                              Sem pendência
                             </span>
                           )}
-                        </td>
+                      </td>
 
-                        <td className="px-4 py-4 align-top">
-                          <p className="text-sm font-semibold text-xango-text">
+                      <td className="px-4 py-4 align-top">
+                        <p className="text-sm text-xango-text">
+                          {formatarTelefone(
+                            paciente.telefone
+                          )}
+                        </p>
+
+                        <p className="mt-1 text-xs text-xango-muted">
+                          {paciente.email ||
+                            "E-mail não informado"}
+                        </p>
+                      </td>
+
+                      <td className="px-4 py-4 align-top">
+                        <div className="flex items-center gap-2">
+                          {paciente.cadastro
+                            .completo ? (
+                            <CheckCircle2
+                              size={15}
+                              className="text-emerald-600"
+                            />
+                          ) : (
+                            <AlertCircle
+                              size={15}
+                              className="text-amber-600"
+                            />
+                          )}
+
+                          <span
+                            className={`text-sm font-semibold ${
+                              paciente.cadastro
+                                .completo
+                                ? "text-emerald-700"
+                                : "text-amber-700"
+                            }`}
+                          >
                             {
-                              paciente.totalAtendimentos
+                              paciente
+                                .cadastro
+                                .percentual
                             }
-                          </p>
+                            %
+                          </span>
+                        </div>
 
-                          <p className="mt-1 text-xs text-xango-muted">
-                            {paciente.ultimoAtendimento
-                              ? `Último ${formatarData(
+                        <p className="mt-1 text-xs text-xango-muted">
+                          {paciente.cadastro
+                            .completo
+                            ? "Completo"
+                            : "Incompleto"}
+                        </p>
+                      </td>
+
+                      <td className="px-4 py-4 align-top">
+                        {agendamento ? (
+                          <>
+                            <p className="text-sm font-medium text-xango-text">
+                              {agendamento}
+                            </p>
+
+                            <p className="mt-1 text-xs text-xango-muted">
+                              {
+                                paciente
+                                  .proximoAgendamento
+                                  ?.procedimento
+                              }
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-sm text-xango-muted">
+                            Sem agendamento futuro
+                          </p>
+                        )}
+                      </td>
+
+                      <td className="px-4 py-4 align-top">
+                        {paciente.financeiro
+                          .possuiPendencia ? (
+                          <>
+                            <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                              Pendência
+                            </span>
+
+                            {paciente.financeiro
+                              .saldoPendente >
+                              0 && (
+                              <p className="mt-1 text-xs text-xango-muted">
+                                {moeda(
                                   paciente
-                                    .ultimoAtendimento
-                                    .criadoEm
-                                )}`
-                              : "Nenhum atendimento"}
-                          </p>
-                        </td>
+                                    .financeiro
+                                    .saldoPendente
+                                )}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                            Sem pendência
+                          </span>
+                        )}
+                      </td>
 
-                        <td className="px-3 py-4 text-right align-middle">
-                          <ChevronRight
-                            size={18}
-                            className="text-xango-muted"
-                          />
-                        </td>
-                      </tr>
-                    );
-                  }
-                )}
+                      <td className="px-4 py-4 align-top">
+                        <p className="text-sm font-semibold text-xango-text">
+                          {
+                            paciente.totalAtendimentos
+                          }
+                        </p>
+
+                        <p className="mt-1 text-xs text-xango-muted">
+                          {paciente.ultimoAtendimento
+                            ? `Último ${formatarData(
+                                paciente
+                                  .ultimoAtendimento
+                                  .criadoEm
+                              )}`
+                            : "Nenhum atendimento"}
+                        </p>
+                      </td>
+
+                      <td className="px-3 py-4 text-right align-middle">
+                        <ChevronRight
+                          size={18}
+                          className="text-xango-muted"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
 
               {!carregando &&
-                pacientesFiltrados.length ===
-                  0 && (
+                pacientes.length === 0 && (
                   <tr>
                     <td
                       colSpan={7}
@@ -735,11 +773,13 @@ export default function PacientesPage() {
                       />
 
                       <p className="mt-3 text-sm font-semibold text-xango-text">
-                        Nenhum paciente encontrado
+                        Nenhum paciente
+                        encontrado
                       </p>
 
                       <p className="mt-1 text-xs text-xango-muted">
-                        Tente alterar a busca ou o filtro selecionado.
+                        Tente alterar a busca ou
+                        o filtro selecionado.
                       </p>
                     </td>
                   </tr>
@@ -747,6 +787,65 @@ export default function PacientesPage() {
             </tbody>
           </table>
         </div>
+
+        {!carregando &&
+          paginacao.total > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-xango-border px-5 py-4">
+              <p className="text-xs text-xango-muted">
+                Mostrando{" "}
+                {primeiroResultado}–
+                {ultimoResultado} de{" "}
+                {paginacao.total}
+              </p>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPagina((atual) =>
+                      Math.max(
+                        atual - 1,
+                        1
+                      )
+                    )
+                  }
+                  disabled={
+                    paginacao.pagina <= 1
+                  }
+                  className="flex items-center gap-1 rounded-md border border-xango-border bg-white px-3 py-2 text-xs font-semibold text-xango-primary transition hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeft size={14} />
+                  Anterior
+                </button>
+
+                <span className="min-w-24 text-center text-xs font-medium text-xango-muted">
+                  Página{" "}
+                  {paginacao.pagina} de{" "}
+                  {paginacao.totalPaginas}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPagina((atual) =>
+                      Math.min(
+                        atual + 1,
+                        paginacao.totalPaginas
+                      )
+                    )
+                  }
+                  disabled={
+                    paginacao.pagina >=
+                    paginacao.totalPaginas
+                  }
+                  className="flex items-center gap-1 rounded-md border border-xango-border bg-white px-3 py-2 text-xs font-semibold text-xango-primary transition hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Próxima
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
       </section>
     </div>
   );
