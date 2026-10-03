@@ -26,8 +26,8 @@ type EmpresaApi = {
 type PacienteApi = {
   id: number;
   nome: string;
-  cpf: string;
-  telefone: string;
+  cpf: string | null;
+  telefone: string | null;
   email: string | null;
   dataNascimento: string | null;
   beneficioAtivo: boolean;
@@ -75,8 +75,8 @@ type ProcedimentoApi = {
 type Paciente = {
   id: number;
   nome: string;
-  cpf: string;
-  telefone: string;
+  cpf: string | null;
+  telefone: string | null;
   email?: string;
   dataNascimento?: string;
   empresa?: string;
@@ -159,7 +159,7 @@ type DocumentoFinanceiroApi = {
       id: number;
       codigoPublico: string | null;
       nome: string;
-      cpf: string;
+      cpf: string | null;
     };
   };
   recibos: {
@@ -218,11 +218,11 @@ function formaPagamentoLabel(forma: string) {
 }
 
 
-function somenteNumeros(valor: string) {
-  return valor.replace(/\D/g, "");
+function somenteNumeros(valor: string | null | undefined) {
+  return String(valor || "").replace(/\D/g, "");
 }
 
-function formatarCpf(valor: string) {
+function formatarCpf(valor: string | null | undefined) {
   const numeros = somenteNumeros(valor).slice(0, 11);
 
   if (numeros.length <= 3) return numeros;
@@ -236,7 +236,7 @@ function formatarCpf(valor: string) {
   return `${numeros.slice(0, 3)}.${numeros.slice(3, 6)}.${numeros.slice(6, 9)}-${numeros.slice(9, 11)}`;
 }
 
-function formatarTelefone(valor: string) {
+function formatarTelefone(valor: string | null | undefined) {
   const numeros = somenteNumeros(valor).slice(0, 11);
 
   if (numeros.length === 0) return "";
@@ -278,6 +278,8 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   );
   const [erroDados, setErroDados] = useState("");
   const [busca, setBusca] = useState("");
+  const [carregandoBuscaPaciente, setCarregandoBuscaPaciente] = useState(false);
+  const [erroBuscaPaciente, setErroBuscaPaciente] = useState("");
 
   const [pacienteSelecionado, setPacienteSelecionado] = useState<
     Paciente | null
@@ -357,41 +359,18 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         setCarregandoDados(true);
         setErroDados("");
 
-        const [resPacientes, resProcedimentos, resClinicas] =
+        const [resProcedimentos, resClinicas] =
           await Promise.all([
-            fetch(`${API_URL}/pacientes`),
             fetch(`${API_URL}/procedimentos`),
             fetch(`${API_URL}/clinicas`),
           ]);
 
-        if (!resPacientes.ok || !resProcedimentos.ok || !resClinicas.ok) {
+        if (!resProcedimentos.ok || !resClinicas.ok) {
           throw new Error("Erro ao carregar dados da API.");
         }
 
-        const pacientesApi: PacienteApi[] = await resPacientes.json();
         const procedimentosApi: ProcedimentoApi[] = await resProcedimentos.json();
         const clinicasApi: ClinicaApi[] = await resClinicas.json();
-
-        const pacientesAdaptados: Paciente[] = pacientesApi.map((paciente) => ({
-          id: paciente.id,
-          nome: paciente.nome,
-          cpf: paciente.cpf,
-          telefone: paciente.telefone,
-          email: paciente.email || undefined,
-          dataNascimento: paciente.dataNascimento || undefined,
-          empresa: paciente.empresa?.nome,
-          beneficioAtivo: paciente.beneficioAtivo,
-          beneficioNome:
-            paciente.beneficioAtivo && paciente.empresa
-              ? paciente.empresa.nome
-              : undefined,
-          beneficioPercentual:
-            paciente.beneficioAtivo && paciente.empresa
-              ? Number(paciente.empresa.percentualBeneficio || 0)
-              : 0,
-          cadastroPercentual: paciente.cadastro?.percentual,
-          cadastroCompleto: paciente.cadastro?.completo,
-        }));
 
         const procedimentosAdaptados: Procedimento[] =
           procedimentosApi.map((procedimento) => {
@@ -433,7 +412,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
           ),
         }));
 
-        setPacientes(pacientesAdaptados);
+        setPacientes([]);
         setProcedimentos(procedimentosAdaptados);
         setClinicas(clinicasAdaptadas);
       } catch (erro) {
@@ -639,24 +618,89 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         modoRevisao,
       ]);
 
-    const pacientesFiltrados = useMemo(() => {
-    const termo = busca.toLowerCase().trim();
-    const termoNumerico = somenteNumeros(busca);
+  useEffect(() => {
+    const termo = busca.trim();
 
-    if (!termo) {
-      return [];
+    if (termo.length < 2) {
+      return;
     }
 
-    return pacientes.filter((paciente) => {
-      return (
-        paciente.nome.toLowerCase().includes(termo) ||
-        (termoNumerico.length > 0 &&
-          somenteNumeros(paciente.cpf).includes(termoNumerico)) ||
-        (termoNumerico.length > 0 &&
-          somenteNumeros(paciente.telefone).includes(termoNumerico))
-      );
-    });
-  }, [busca, pacientes]);
+    const controller = new AbortController();
+
+    const timer = window.setTimeout(async () => {
+      try {
+        setCarregandoBuscaPaciente(true);
+        setErroBuscaPaciente("");
+
+        const resposta = await fetch(
+          `${API_URL}/pacientes/busca?termo=${encodeURIComponent(termo)}&limite=20`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
+
+        const dados: (PacienteApi[] & { erro?: string }) | { erro?: string } =
+          await resposta.json();
+
+        if (!resposta.ok) {
+          throw new Error(
+            !Array.isArray(dados) && dados.erro
+              ? dados.erro
+              : "Não foi possível pesquisar os pacientes."
+          );
+        }
+
+        const pacientesApi = Array.isArray(dados) ? dados : [];
+
+        const pacientesAdaptados: Paciente[] = pacientesApi.map((paciente) => ({
+          id: paciente.id,
+          nome: paciente.nome,
+          cpf: paciente.cpf,
+          telefone: paciente.telefone,
+          email: paciente.email || undefined,
+          dataNascimento: paciente.dataNascimento || undefined,
+          empresa: paciente.empresa?.nome,
+          beneficioAtivo: paciente.beneficioAtivo,
+          beneficioNome:
+            paciente.beneficioAtivo && paciente.empresa
+              ? paciente.empresa.nome
+              : undefined,
+          beneficioPercentual:
+            paciente.beneficioAtivo && paciente.empresa
+              ? Number(paciente.empresa.percentualBeneficio || 0)
+              : 0,
+          cadastroPercentual: paciente.cadastro?.percentual,
+          cadastroCompleto: paciente.cadastro?.completo,
+        }));
+
+        setPacientes(pacientesAdaptados);
+      } catch (erro) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        console.error("Erro ao pesquisar pacientes:", erro);
+        setPacientes([]);
+        setErroBuscaPaciente(
+          erro instanceof Error
+            ? erro.message
+            : "Não foi possível pesquisar os pacientes."
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setCarregandoBuscaPaciente(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [busca]);
+
+  const pacientesFiltrados = pacientes;
 
   const procedimentosFiltrados = useMemo(() => {
     const termo = normalizarBuscaProcedimento(buscaProcedimento);
@@ -1024,7 +1068,7 @@ const etapaMaximaLiberada = useMemo(() => {
   guiasSalvas,
 ]);
 
-const contextoAprendizAtendimento = useMemo(() => {
+const contextoAprendizAtendimento = (() => {
   const criar = (estado: string, alvo: string, detalhe = "") => ({
     estado,
     alvo,
@@ -1403,37 +1447,7 @@ const contextoAprendizAtendimento = useMemo(() => {
     "revisao-conferir",
     '[data-aprendiz="atendimento-revisao"]'
   );
-}, [
-  carregandoDados,
-  carregandoAtendimento,
-  erroDados,
-  novoPacienteAberto,
-  novoNome,
-  novoCpf,
-  novoTelefone,
-  guiaPagamentoAberta,
-  guiaEstornoAberta,
-  formaPagamento,
-  valorRecebido,
-  formaEstorno,
-  valorEstornadoInformado,
-  etapaAtual,
-  pacienteSelecionado,
-  procedimentosSelecionados,
-  clinicas,
-  clinicasSelecionadas,
-  unidadesSelecionadas,
-  tiposAgendamento,
-  datasAgendamento,
-  horariosAgendamento,
-  guias,
-  procedimentosCancelados,
-  descontosGuias,
-  pagamentosGuias,
-  estornosGuias,
-  guiasSalvas,
-  etapaMaximaLiberada,
-]);
+})();
 
   async function salvarAtendimentoParaDepois(
     permanecerNaTela = false,
@@ -2163,12 +2177,12 @@ const contextoAprendizAtendimento = useMemo(() => {
                       </p>
 
                       <p className="mt-1 text-xs text-xango-muted">
-                        CPF: {formatarCpf(paciente.cpf)}
+                        CPF: {formatarCpf(paciente.cpf) || "Não informado"}
                       </p>
                     </div>
 
                     <p className="text-xs text-xango-muted">
-                      {formatarTelefone(paciente.telefone)}
+                      {formatarTelefone(paciente.telefone) || "Telefone não informado"}
                     </p>
                   </button>
                 );
@@ -2176,15 +2190,46 @@ const contextoAprendizAtendimento = useMemo(() => {
             </div>
           )}
 
-          {busca && pacientesFiltrados.length === 0 && (
+          {busca.trim().length > 0 &&
+            busca.trim().length < 2 &&
+            !pacienteSelecionado && (
+              <div className="rounded-md border border-dashed border-xango-border bg-xango-background p-6 text-center">
+                <p className="text-sm text-xango-muted">
+                  Digite pelo menos 2 caracteres para pesquisar.
+                </p>
+              </div>
+            )}
+
+          {busca.trim().length >= 2 && carregandoBuscaPaciente && (
             <div className="rounded-md border border-dashed border-xango-border bg-xango-background p-6 text-center">
               <p className="text-sm text-xango-muted">
-                Nenhum paciente encontrado.
+                Pesquisando pacientes...
               </p>
             </div>
           )}
 
-          {!busca && !pacienteSelecionado && (
+          {busca.trim().length >= 2 &&
+            !carregandoBuscaPaciente &&
+            erroBuscaPaciente && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-6 text-center">
+                <p className="text-sm text-red-700">
+                  {erroBuscaPaciente}
+                </p>
+              </div>
+            )}
+
+          {busca.trim().length >= 2 &&
+            !carregandoBuscaPaciente &&
+            !erroBuscaPaciente &&
+            pacientesFiltrados.length === 0 && (
+              <div className="rounded-md border border-dashed border-xango-border bg-xango-background p-6 text-center">
+                <p className="text-sm text-xango-muted">
+                  Nenhum paciente encontrado.
+                </p>
+              </div>
+            )}
+
+          {!busca.trim() && !pacienteSelecionado && (
             <div className="rounded-md border border-dashed border-xango-border bg-xango-background p-6 text-center">
               <p className="text-sm text-xango-muted">
                 Pesquise um paciente para continuar o atendimento.
@@ -2203,7 +2248,7 @@ const contextoAprendizAtendimento = useMemo(() => {
                 <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">Paciente selecionado</p>
                 <p className="mt-2 font-semibold text-xango-text">{pacienteSelecionado.nome}</p>
                 <p className="mt-1 text-sm text-xango-muted">
-                  {formatarCpf(pacienteSelecionado.cpf)} • {formatarTelefone(pacienteSelecionado.telefone)}
+                  {formatarCpf(pacienteSelecionado.cpf) || "CPF não informado"} • {formatarTelefone(pacienteSelecionado.telefone) || "Telefone não informado"}
                 </p>
                 <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
                   pacienteSelecionado.cadastroCompleto ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-800"
@@ -3442,7 +3487,7 @@ const contextoAprendizAtendimento = useMemo(() => {
           {pacienteSelecionado && (
             <>
               <p className="mt-1 text-sm text-xango-muted">
-                CPF: {formatarCpf(pacienteSelecionado.cpf)}{" • "}{formatarTelefone(pacienteSelecionado.telefone)}
+                CPF: {formatarCpf(pacienteSelecionado.cpf) || "Não informado"}{" • "}{formatarTelefone(pacienteSelecionado.telefone) || "Telefone não informado"}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className={`rounded-full px-3 py-1 text-xs font-semibold ${

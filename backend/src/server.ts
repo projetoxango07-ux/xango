@@ -6974,6 +6974,93 @@ function vinculoRemovivel(tipo: string) {
 // ======================================================
 // PACIENTE - FICHA COMPLETA
 // ======================================================
+app.get("/pacientes/busca", async (req, res) => {
+  try {
+    const termo = String(req.query.termo || "").trim();
+
+    const limiteRecebido = Number(req.query.limite || 20);
+    const limite = Math.min(
+      Math.max(Number.isFinite(limiteRecebido) ? limiteRecebido : 20, 1),
+      50
+    );
+
+    if (termo.length < 2) {
+      return res.json([]);
+    }
+
+    const termoNumerico = termo.replace(/\D/g, "");
+
+    const filtros: any[] = [
+      {
+        nome: {
+          contains: termo,
+          mode: "insensitive",
+        },
+      },
+    ];
+
+    if (termoNumerico.length >= 2) {
+      filtros.push(
+        {
+          cpf: {
+            contains: termoNumerico,
+          },
+        },
+        {
+          telefone: {
+            contains: termoNumerico,
+          },
+        },
+        {
+          telefoneSecundario: {
+            contains: termoNumerico,
+          },
+        }
+      );
+    }
+
+    const pacientes = await prisma.paciente.findMany({
+      where: {
+        OR: filtros,
+      },
+      take: limite,
+      select: {
+        id: true,
+        codigoPublico: true,
+        nome: true,
+        cpf: true,
+        telefone: true,
+        telefoneSecundario: true,
+        email: true,
+        dataNascimento: true,
+        beneficioAtivo: true,
+        empresa: {
+          select: {
+            id: true,
+            nome: true,
+            percentualBeneficio: true,
+          },
+        },
+      },
+      orderBy: [
+        {
+          nome: "asc",
+        },
+        {
+          id: "asc",
+        },
+      ],
+    });
+
+    return res.json(pacientes);
+  } catch (erro) {
+    console.error("Erro ao pesquisar pacientes:", erro);
+
+    return res.status(500).json({
+      erro: "Não foi possível pesquisar os pacientes.",
+    });
+  }
+});
 
 app.get("/pacientes/:id", async (req, res) => {
   try {
