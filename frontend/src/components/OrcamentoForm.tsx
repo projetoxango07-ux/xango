@@ -21,8 +21,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333";
 type Paciente = {
   id: number;
   nome: string;
-  cpf: string;
-  telefone: string;
+  cpf: string | null;
+  telefone: string | null;
   email: string | null;
 };
 
@@ -102,7 +102,7 @@ type OrcamentoApi = {
   codigoPublico: string | null;
   pacienteId: number | null;
   nomePaciente: string;
-  telefonePaciente: string;
+  telefonePaciente: string | null;
   status: "ABERTO" | "PARCIALMENTE_CONVERTIDO" | "ENCERRADO" | "VENCIDO";
   statusBanco?: "ABERTO" | "PARCIALMENTE_CONVERTIDO" | "ENCERRADO";
   vencido?: boolean;
@@ -146,14 +146,15 @@ type OrcamentoFormProps = {
   orcamentoId?: number;
 };
 
-function somenteNumeros(valor: string) {
-  return valor.replace(/\D/g, "");
+function somenteNumeros(valor: string | null | undefined) {
+  return String(valor || "").replace(/\D/g, "");
 }
 
-function formatarCpf(valor: string) {
+function formatarCpf(valor: string | null | undefined) {
   const numeros = somenteNumeros(valor).slice(0, 11);
 
-  if (numeros.length !== 11) return valor;
+  if (numeros.length === 0) return "CPF não informado";
+  if (numeros.length !== 11) return String(valor || "");
 
   return `${numeros.slice(0, 3)}.${numeros.slice(3, 6)}.${numeros.slice(
     6,
@@ -161,10 +162,10 @@ function formatarCpf(valor: string) {
   )}-${numeros.slice(9)}`;
 }
 
-function formatarTelefone(valor: string) {
+function formatarTelefone(valor: string | null | undefined) {
   const numeros = somenteNumeros(valor).slice(0, 11);
 
-  if (numeros.length === 0) return "";
+  if (numeros.length === 0) return "Telefone não informado";
   if (numeros.length <= 2) return `(${numeros}`;
   if (numeros.length <= 6) {
     return `(${numeros.slice(0, 2)}) ${numeros.slice(2)}`;
@@ -374,6 +375,8 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
     "CADASTRADO"
   );
   const [buscaPaciente, setBuscaPaciente] = useState("");
+  const [carregandoBuscaPaciente, setCarregandoBuscaPaciente] = useState(false);
+  const [erroBuscaPaciente, setErroBuscaPaciente] = useState("");
   const [pacienteSelecionado, setPacienteSelecionado] =
     useState<Paciente | null>(null);
   const [nomePacienteNovo, setNomePacienteNovo] = useState("");
@@ -398,29 +401,24 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
           setCarregando(true);
           setErroCarregamento("");
 
-          const [resPacientes, resProcedimentos] = await Promise.all([
-            fetch(`${API_URL}/pacientes`, { cache: "no-store" }),
-            fetch(`${API_URL}/procedimentos/catalogo`, {
+          const resProcedimentos = await fetch(
+            `${API_URL}/procedimentos/catalogo`,
+            {
               cache: "no-store",
-            }),
-          ]);
+            }
+          );
 
-          if (!resPacientes.ok || !resProcedimentos.ok) {
+          if (!resProcedimentos.ok) {
             throw new Error("Não foi possível carregar os dados do orçamento.");
           }
 
-          const pacientesApi: Paciente[] = await resPacientes.json();
           const procedimentosApi: Procedimento[] =
             await resProcedimentos.json();
 
-          const pacientesValidos = Array.isArray(pacientesApi)
-            ? pacientesApi
-            : [];
           const procedimentosValidos = Array.isArray(procedimentosApi)
             ? procedimentosApi
             : [];
 
-          setPacientes(pacientesValidos);
           setProcedimentos(procedimentosValidos);
 
           if (procedimentoPreSelecionadoId) {
@@ -536,16 +534,29 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
           setRenovarValidade(false);
 
           if (dadosOrigem.pacienteId) {
-            const paciente = pacientesValidos.find(
-              (registro) => registro.id === dadosOrigem.pacienteId
-            );
+            try {
+              const respostaPaciente = await fetch(
+                `${API_URL}/pacientes/${dadosOrigem.pacienteId}`,
+                { cache: "no-store" }
+              );
 
-            if (paciente) {
+              if (!respostaPaciente.ok) {
+                throw new Error("Paciente vinculado não encontrado.");
+              }
+
+              const pacienteApi: Paciente = await respostaPaciente.json();
+
               setModoPaciente("CADASTRADO");
-              setPacienteSelecionado(paciente);
+              setPacienteSelecionado({
+                id: pacienteApi.id,
+                nome: pacienteApi.nome,
+                cpf: pacienteApi.cpf || null,
+                telefone: pacienteApi.telefone || null,
+                email: pacienteApi.email || null,
+              });
               setNomePacienteNovo("");
               setTelefonePacienteNovo("");
-            } else {
+            } catch {
               setModoPaciente("NOVO");
               setPacienteSelecionado(null);
               setNomePacienteNovo(dadosOrigem.nomePaciente);
@@ -607,34 +618,68 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
     unidadePreSelecionadaId,
   ]);
 
-  const pacientesFiltrados = useMemo(() => {
-    const termo = normalizar(buscaPaciente);
-    const numeros = somenteNumeros(buscaPaciente);
+  useEffect(() => {
+    const termo = buscaPaciente.trim();
 
-    return pacientes
-      .filter((paciente) => {
-        if (!termo && !numeros) return true;
+    if (termo.length < 2) {
+      setPacientes([]);
+      setErroBuscaPaciente("");
+      setCarregandoBuscaPaciente(false);
+      return;
+    }
 
-        const texto = normalizar(
-          `${paciente.nome} ${paciente.cpf} ${paciente.telefone} ${
-            paciente.email || ""
-          }`
+    const controller = new AbortController();
+
+    const timer = window.setTimeout(async () => {
+      try {
+        setCarregandoBuscaPaciente(true);
+        setErroBuscaPaciente("");
+
+        const resposta = await fetch(
+          `${API_URL}/pacientes/busca?termo=${encodeURIComponent(
+            termo
+          )}&limite=20`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          }
         );
 
-        if (termo && texto.includes(termo)) return true;
+        const dados: Paciente[] | { erro?: string } = await resposta.json();
 
-        if (
-          numeros &&
-          (somenteNumeros(paciente.cpf).includes(numeros) ||
-            somenteNumeros(paciente.telefone).includes(numeros))
-        ) {
-          return true;
+        if (!resposta.ok) {
+          throw new Error(
+            !Array.isArray(dados) && dados.erro
+              ? dados.erro
+              : "Não foi possível pesquisar os pacientes."
+          );
         }
 
-        return false;
-      })
-      .slice(0, 8);
-  }, [pacientes, buscaPaciente]);
+        setPacientes(Array.isArray(dados) ? dados : []);
+      } catch (erro) {
+        if (controller.signal.aborted) return;
+
+        console.error("Erro ao pesquisar pacientes:", erro);
+        setPacientes([]);
+        setErroBuscaPaciente(
+          erro instanceof Error
+            ? erro.message
+            : "Não foi possível pesquisar os pacientes."
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setCarregandoBuscaPaciente(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [buscaPaciente]);
+
+  const pacientesFiltrados = pacientes;
 
   const idsSelecionados = useMemo(
     () => new Set(itens.map((item) => item.procedimentoId)),
@@ -1043,7 +1088,20 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
                     </div>
 
                     <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-xango-border">
-                      {pacientesFiltrados.length === 0 ? (
+                      {buscaPaciente.trim().length < 2 ? (
+                        <div className="p-5 text-center text-sm text-xango-muted">
+                          Digite pelo menos 2 caracteres para pesquisar.
+                        </div>
+                      ) : carregandoBuscaPaciente ? (
+                        <div className="flex items-center justify-center gap-2 p-5 text-sm text-xango-muted">
+                          <Loader2 size={16} className="animate-spin" />
+                          Pesquisando pacientes...
+                        </div>
+                      ) : erroBuscaPaciente ? (
+                        <div className="p-5 text-center text-sm text-red-600">
+                          {erroBuscaPaciente}
+                        </div>
+                      ) : pacientesFiltrados.length === 0 ? (
                         <div className="p-5 text-center text-sm text-xango-muted">
                           Nenhum paciente encontrado.
                         </div>
