@@ -88,6 +88,9 @@ type Repasse = {
   dataPagamentoEfetivo: string | null;
   formaPagamento: string | null;
   formaPagamentoLabel: string | null;
+  contaFinanceiraId: number | null;
+  contaFinanceiraNome: string | null;
+  contaAlteradaManualmente: boolean;
   observacaoPagamento: string | null;
   motivoRecusa: string | null;
   observacoes: string | null;
@@ -103,6 +106,18 @@ type Repasse = {
 
 type DadosApi = {
   clinicas: Clinica[];
+  contasFinanceiras: Array<{
+    id: number;
+    nome: string;
+    tipo: string;
+    tipoLabel: string;
+    ativo: boolean;
+  }>;
+  contasPadraoRepasse: Array<{
+    forma: string;
+    contaFinanceiraId: number;
+    contaFinanceiraNome: string | null;
+  }>;
   limitesDataPagamento: { minimo: string; maximo: string };
   resumo: {
     disponivel: number;
@@ -333,6 +348,7 @@ export default function RepassesPage() {
   const [repassePagamento, setRepassePagamento] = useState<Repasse | null>(null);
   const [pagamentoData, setPagamentoData] = useState(hojeInput());
   const [pagamentoForma, setPagamentoForma] = useState("PIX");
+  const [pagamentoContaId, setPagamentoContaId] = useState("");
   const [pagamentoObservacao, setPagamentoObservacao] = useState("");
   const [pagamentoComprovante, setPagamentoComprovante] = useState<File | null>(null);
   const [pagamentoNota, setPagamentoNota] = useState<File | null>(null);
@@ -486,23 +502,40 @@ export default function RepassesPage() {
     }
   }
 
+  function contaPadraoParaForma(forma: string) {
+    return (dados?.contasPadraoRepasse || []).find(
+      (item) => item.forma === forma
+    )?.contaFinanceiraId || null;
+  }
+
   function abrirPagamento(repasse: Repasse) {
+    const forma = repasse.formaPagamento || "PIX";
+    const contaSugerida =
+      repasse.contaFinanceiraId || contaPadraoParaForma(forma);
+
     setRepassePagamento(repasse);
     setPagamentoData(repasse.dataPagamentoEfetivo ? repasse.dataPagamentoEfetivo.slice(0, 10) : hojeInput());
-    setPagamentoForma(repasse.formaPagamento || "PIX");
+    setPagamentoForma(forma);
+    setPagamentoContaId(contaSugerida ? String(contaSugerida) : "");
     setPagamentoObservacao(repasse.observacaoPagamento || "");
     setPagamentoComprovante(null);
     setPagamentoNota(null);
   }
 
   async function registrarPagamento() {
-    if (!repassePagamento || !pagamentoData || !pagamentoForma) return;
+    if (
+      !repassePagamento ||
+      !pagamentoData ||
+      !pagamentoForma ||
+      ((dados?.contasFinanceiras || []).length > 0 && !pagamentoContaId)
+    ) return;
     try {
       setProcessando(true);
       limparAvisos();
       const form = new FormData();
       form.append("dataPagamento", pagamentoData);
       form.append("formaPagamento", pagamentoForma);
+      if (pagamentoContaId) form.append("contaFinanceiraId", pagamentoContaId);
       form.append("observacaoPagamento", pagamentoObservacao.trim());
       if (pagamentoComprovante) form.append("comprovante", pagamentoComprovante);
       if (pagamentoNota) form.append("notaFiscal", pagamentoNota);
@@ -937,7 +970,13 @@ export default function RepassesPage() {
 
           {!carregando && (dados?.repasses || []).map((repasse) => {
             const aberto = abertos.includes(repasse.id);
-            const pagamentoIncompleto = repasse.status === "PAGO" && (!repasse.dataPagamentoEfetivo || !repasse.formaPagamento);
+            const pagamentoIncompleto =
+              repasse.status === "PAGO" &&
+              (
+                !repasse.dataPagamentoEfetivo ||
+                !repasse.formaPagamento ||
+                ((dados?.contasFinanceiras || []).length > 0 && !repasse.contaFinanceiraId)
+              );
             return (
               <article key={repasse.id} className="p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1036,7 +1075,7 @@ export default function RepassesPage() {
                     </div>
 
                     {repasse.status === "PAGO" && (
-                      <div className="mt-4 grid gap-3 rounded-lg border border-xango-border bg-white p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="mt-4 grid gap-3 rounded-lg border border-xango-border bg-white p-4 text-sm sm:grid-cols-2 lg:grid-cols-5">
                         <div>
                           <p className="text-xs font-semibold uppercase text-xango-muted">Data efetiva</p>
                           <p className="mt-1 font-medium text-xango-text">{dataCurta(repasse.dataPagamentoEfetivo)}</p>
@@ -1044,6 +1083,13 @@ export default function RepassesPage() {
                         <div>
                           <p className="text-xs font-semibold uppercase text-xango-muted">Forma</p>
                           <p className="mt-1 font-medium text-xango-text">{repasse.formaPagamentoLabel || "Não informada"}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-xango-muted">Conta de saída</p>
+                          <p className="mt-1 font-medium text-xango-text">{repasse.contaFinanceiraNome || "Não informada"}</p>
+                          {repasse.contaAlteradaManualmente && (
+                            <p className="mt-1 text-[11px] font-semibold text-amber-700">Padrão alterado manualmente</p>
+                          )}
                         </div>
                         <div className="sm:col-span-2">
                           <p className="text-xs font-semibold uppercase text-xango-muted">Observação</p>
@@ -1234,7 +1280,12 @@ export default function RepassesPage() {
                   Forma de pagamento *
                   <select
                     value={pagamentoForma}
-                    onChange={(e) => setPagamentoForma(e.target.value)}
+                    onChange={(e) => {
+                      const novaForma = e.target.value;
+                      setPagamentoForma(novaForma);
+                      const contaPadrao = contaPadraoParaForma(novaForma);
+                      setPagamentoContaId(contaPadrao ? String(contaPadrao) : "");
+                    }}
                     className="mt-1 w-full rounded-lg border border-xango-border bg-white px-3 py-2.5 text-sm font-normal text-xango-text outline-none focus:border-xango-primary"
                   >
                     <option value="PIX">PIX</option>
@@ -1245,6 +1296,43 @@ export default function RepassesPage() {
                   </select>
                 </label>
               </div>
+
+              <label className="block text-xs font-semibold text-xango-muted">
+                Conta de saída *
+                <select
+                  value={pagamentoContaId}
+                  onChange={(e) => setPagamentoContaId(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-xango-border bg-white px-3 py-2.5 text-sm font-normal text-xango-text outline-none focus:border-xango-primary"
+                >
+                  <option value="">Selecione a conta</option>
+                  {(dados?.contasFinanceiras || []).map((conta) => (
+                    <option key={conta.id} value={conta.id}>
+                      {conta.nome}
+                    </option>
+                  ))}
+                </select>
+                {contaPadraoParaForma(pagamentoForma) && (
+                  <span className="mt-1 block text-[11px] font-normal text-xango-muted">
+                    Conta padrão sugerida: {
+                      dados?.contasFinanceiras.find(
+                        (conta) => conta.id === contaPadraoParaForma(pagamentoForma)
+                      )?.nome || "conta configurada"
+                    }. Você pode alterar antes de salvar.
+                  </span>
+                )}
+                {contaPadraoParaForma(pagamentoForma) &&
+                  pagamentoContaId &&
+                  Number(pagamentoContaId) !== contaPadraoParaForma(pagamentoForma) && (
+                    <span className="mt-1 block text-[11px] font-semibold text-amber-700">
+                      A conta padrão foi alterada manualmente para este repasse.
+                    </span>
+                  )}
+                {(dados?.contasFinanceiras || []).length === 0 && (
+                  <span className="mt-1 block text-[11px] font-normal text-amber-700">
+                    Nenhuma conta financeira ativa está cadastrada.
+                  </span>
+                )}
+              </label>
 
               <label className="block text-xs font-semibold text-xango-muted">
                 Observação do pagamento
@@ -1291,7 +1379,12 @@ export default function RepassesPage() {
               </button>
               <button
                 type="button"
-                disabled={processando || !pagamentoData || !pagamentoForma}
+                disabled={
+                  processando ||
+                  !pagamentoData ||
+                  !pagamentoForma ||
+                  ((dados?.contasFinanceiras || []).length > 0 && !pagamentoContaId)
+                }
                 onClick={() => void registrarPagamento()}
                 className="inline-flex items-center gap-2 rounded-lg bg-xango-primary px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
               >

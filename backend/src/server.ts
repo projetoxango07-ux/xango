@@ -1351,6 +1351,7 @@ const FORMAS_PAGAMENTO_CONFIGURAVEIS = [
   "DINHEIRO",
   "CARTAO_CREDITO",
   "CARTAO_DEBITO",
+  "BOLETO",
   "TRANSFERENCIA",
   "OUTRO",
 ] as const;
@@ -1363,6 +1364,7 @@ const ROTULOS_FORMAS_PAGAMENTO: Record<FormaPagamentoConfiguravel, string> = {
   DINHEIRO: "Dinheiro",
   CARTAO_CREDITO: "Cartão de crédito",
   CARTAO_DEBITO: "Cartão de débito",
+  BOLETO: "Boleto",
   TRANSFERENCIA: "Transferência",
   OUTRO: "Outro",
 };
@@ -1372,6 +1374,196 @@ function normalizarFormasPagamentoConfiguradas(valor: unknown) {
   return FORMAS_PAGAMENTO_CONFIGURAVEIS.filter((forma) =>
     recebidas.includes(forma)
   );
+}
+
+const MAX_PARCELAS_CREDITO = 12;
+
+function arredondarCentavos(valor: number) {
+  return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
+}
+
+function normalizarParcelasPagamento(
+  forma: FormaPagamentoConfiguravel,
+  valor: unknown
+) {
+  if (forma !== "CARTAO_CREDITO") return 1;
+  const parcelas = Number(valor);
+  if (!Number.isInteger(parcelas) || parcelas < 1 || parcelas > MAX_PARCELAS_CREDITO) {
+    throw new Error("PARCELAS_INVALIDAS");
+  }
+  return parcelas;
+}
+
+function serializarOperadoraPagamento(operadora: any) {
+  return {
+    id: operadora.id,
+    nome: operadora.nome,
+    ativo: operadora.ativo,
+    tarifas: (operadora.tarifas || []).map((tarifa: any) => ({
+      id: tarifa.id,
+      forma: tarifa.forma,
+      parcelas: tarifa.parcelas,
+      percentual: Number(tarifa.percentual || 0),
+      fixa: Number(tarifa.fixa || 0),
+      ativo: tarifa.ativo,
+    })),
+  };
+}
+
+async function buscarOperadorasPagamento(
+  organizacaoId: number,
+  incluirInativas = false
+) {
+  return prisma.operadoraPagamento.findMany({
+    where: {
+      organizacaoId,
+      ...(incluirInativas ? {} : { ativo: true }),
+    },
+    include: {
+      tarifas: {
+        where: incluirInativas ? {} : { ativo: true },
+        orderBy: [{ forma: "asc" }, { parcelas: "asc" }],
+      },
+    },
+    orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+  });
+}
+
+function calcularTarifaPagamento(
+  valor: number,
+  percentual: number,
+  fixa: number
+) {
+  const valorTarifa = arredondarCentavos(
+    valor * (percentual / 100) + fixa
+  );
+  return {
+    valorTarifa,
+    valorLiquido: arredondarCentavos(Math.max(valor - valorTarifa, 0)),
+  };
+}
+
+const TIPOS_CONTA_FINANCEIRA = [
+  "BANCO",
+  "CARTEIRA_DIGITAL",
+  "CAIXA",
+  "OUTRO",
+] as const;
+
+const FORMAS_REPASSE_CONFIGURAVEIS = [
+  "PIX",
+  "TRANSFERENCIA",
+  "BOLETO",
+  "DINHEIRO",
+  "OUTRO",
+] as const;
+
+function rotuloTipoContaFinanceira(tipo: string) {
+  const mapa: Record<string, string> = {
+    BANCO: "Banco",
+    CARTEIRA_DIGITAL: "Carteira digital / adquirente",
+    CAIXA: "Caixa físico",
+    OUTRO: "Outro",
+  };
+  return mapa[tipo] || tipo.replaceAll("_", " ");
+}
+
+function serializarContaFinanceira(conta: any) {
+  return {
+    id: conta.id,
+    nome: conta.nome,
+    tipo: conta.tipo,
+    tipoLabel: rotuloTipoContaFinanceira(conta.tipo),
+    saldoInicial: Number(conta.saldoInicial || 0),
+    saldoInicialEm: conta.saldoInicialEm || null,
+    ativo: conta.ativo,
+  };
+}
+
+function serializarFormaRecebimento(forma: any) {
+  return {
+    id: forma.id,
+    nome: forma.nome,
+    forma: forma.forma,
+    formaLabel:
+      ROTULOS_FORMAS_PAGAMENTO[
+        forma.forma as FormaPagamentoConfiguravel
+      ] || forma.forma,
+    ativo: forma.ativo,
+    operadora: forma.operadora
+      ? {
+          id: forma.operadora.id,
+          nome: forma.operadora.nome,
+          ativo: forma.operadora.ativo,
+        }
+      : null,
+    contaPadrao: forma.contaPadrao
+      ? serializarContaFinanceira(forma.contaPadrao)
+      : null,
+    tarifas: (forma.tarifas || []).map((tarifa: any) => ({
+      id: tarifa.id,
+      parcelas: tarifa.parcelas,
+      percentual: Number(tarifa.percentual || 0),
+      fixa: Number(tarifa.fixa || 0),
+      ativo: tarifa.ativo,
+    })),
+  };
+}
+
+async function buscarConfiguracaoRecebimentos(
+  organizacaoId: number,
+  incluirInativos = false
+) {
+  const [contas, operadoras, formas, padroesRepasse] = await Promise.all([
+    prisma.contaFinanceira.findMany({
+      where: {
+        organizacaoId,
+        ...(incluirInativos ? {} : { ativo: true }),
+      },
+      orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+    }),
+    prisma.operadoraPagamento.findMany({
+      where: {
+        organizacaoId,
+        ...(incluirInativos ? {} : { ativo: true }),
+      },
+      orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+    }),
+    prisma.formaRecebimento.findMany({
+      where: {
+        organizacaoId,
+        ...(incluirInativos ? {} : { ativo: true }),
+      },
+      include: {
+        operadora: {
+          select: { id: true, nome: true, ativo: true },
+        },
+        contaPadrao: true,
+        tarifas: {
+          where: incluirInativos ? {} : { ativo: true },
+          orderBy: { parcelas: "asc" },
+        },
+      },
+      orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+    }),
+    prisma.contaPadraoRepasse.findMany({
+      where: {
+        organizacaoId,
+        ...(incluirInativos
+          ? {}
+          : { contaFinanceira: { ativo: true } }),
+      },
+      include: { contaFinanceira: true },
+      orderBy: { forma: "asc" },
+    }),
+  ]);
+
+  return {
+    contas,
+    operadoras,
+    formas,
+    padroesRepasse,
+  };
 }
 
 async function obterNumeracaoFinanceiraAtual() {
@@ -1422,6 +1614,10 @@ app.get("/preferencias/financeiro", async (_req, res) => {
     const formas = normalizarFormasPagamentoConfiguradas(
       organizacao.formasPagamentoHabilitadas
     );
+    const configuracao = await buscarConfiguracaoRecebimentos(
+      organizacaoAtualId(),
+      false
+    );
 
     return res.json({
       formasPagamentoHabilitadas:
@@ -1430,6 +1626,21 @@ app.get("/preferencias/financeiro", async (_req, res) => {
         codigo,
         label: ROTULOS_FORMAS_PAGAMENTO[codigo],
       })),
+      maxParcelasCredito: MAX_PARCELAS_CREDITO,
+      contasFinanceiras: configuracao.contas.map(serializarContaFinanceira),
+      formasRecebimento: configuracao.formas.map(serializarFormaRecebimento),
+      contasPadraoRepasse: configuracao.padroesRepasse.map((item: any) => ({
+        forma: item.forma,
+        contaFinanceiraId: item.contaFinanceiraId,
+        contaFinanceiraNome: item.contaFinanceira?.nome || null,
+      })),
+      // Mantido temporariamente para compatibilidade com telas antigas.
+      operadorasPagamento: configuracao.operadoras.map((operadora: any) => ({
+        id: operadora.id,
+        nome: operadora.nome,
+        ativo: operadora.ativo,
+        tarifas: [],
+      })),
       textoPadraoRecibo: organizacao.textoPadraoRecibo || "",
       textoPadraoEstorno: organizacao.textoPadraoEstorno || "",
     });
@@ -1437,6 +1648,531 @@ app.get("/preferencias/financeiro", async (_req, res) => {
     console.error("Erro ao carregar preferências financeiras:", erro);
     return res.status(500).json({
       erro: "Não foi possível carregar as preferências financeiras.",
+    });
+  }
+});
+
+app.get("/financeiro/configuracao-recebimentos", async (_req, res) => {
+  try {
+    const organizacaoId = organizacaoAtualId();
+    const configuracao = await buscarConfiguracaoRecebimentos(
+      organizacaoId,
+      true
+    );
+
+    return res.json({
+      maxParcelasCredito: MAX_PARCELAS_CREDITO,
+      tiposConta: TIPOS_CONTA_FINANCEIRA.map((codigo) => ({
+        codigo,
+        label: rotuloTipoContaFinanceira(codigo),
+      })),
+      formasPagamento: FORMAS_PAGAMENTO_CONFIGURAVEIS.map((codigo) => ({
+        codigo,
+        label: ROTULOS_FORMAS_PAGAMENTO[codigo],
+      })),
+      formasRepasse: FORMAS_REPASSE_CONFIGURAVEIS.map((codigo) => ({
+        codigo,
+        label: rotuloFormaPagamentoRepasse(codigo),
+      })),
+      contas: configuracao.contas.map(serializarContaFinanceira),
+      operadoras: configuracao.operadoras.map((operadora: any) => ({
+        id: operadora.id,
+        nome: operadora.nome,
+        ativo: operadora.ativo,
+      })),
+      formasRecebimento: configuracao.formas.map(serializarFormaRecebimento),
+      contasPadraoRepasse: configuracao.padroesRepasse.map((item: any) => ({
+        forma: item.forma,
+        contaFinanceiraId: item.contaFinanceiraId,
+      })),
+    });
+  } catch (erro) {
+    console.error("Erro ao carregar configuração de recebimentos:", erro);
+    return res.status(500).json({
+      erro: "Não foi possível carregar as contas e formas de recebimento.",
+    });
+  }
+});
+
+app.put("/financeiro/configuracao-recebimentos", async (req, res) => {
+  try {
+    const organizacaoId = organizacaoAtualId();
+    const contasRecebidas = Array.isArray(req.body?.contas)
+      ? req.body.contas
+      : [];
+    const operadorasRecebidas = Array.isArray(req.body?.operadoras)
+      ? req.body.operadoras
+      : [];
+    const formasRecebidas = Array.isArray(req.body?.formasRecebimento)
+      ? req.body.formasRecebimento
+      : [];
+    const padroesRecebidos = Array.isArray(req.body?.contasPadraoRepasse)
+      ? req.body.contasPadraoRepasse
+      : [];
+
+    if (contasRecebidas.length > 50) {
+      return res.status(400).json({ erro: "Cadastre no máximo 50 contas financeiras." });
+    }
+    if (operadorasRecebidas.length > 30) {
+      return res.status(400).json({ erro: "Cadastre no máximo 30 operadoras." });
+    }
+    if (formasRecebidas.length > 100) {
+      return res.status(400).json({ erro: "Cadastre no máximo 100 formas de recebimento." });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      const contasPorChave = new Map<string, number>();
+      const operadorasPorChave = new Map<string, number>();
+
+      for (const item of contasRecebidas) {
+        const chave = String(item?.chave || "").trim();
+        const nome = String(item?.nome || "").trim();
+        const tipo = String(item?.tipo || "BANCO").trim().toUpperCase();
+        const saldoInicial = arredondarCentavos(Number(item?.saldoInicial || 0));
+        const saldoInicialEmTexto = String(item?.saldoInicialEm || "").trim();
+        const saldoInicialEm = saldoInicialEmTexto
+          ? new Date(`${saldoInicialEmTexto.slice(0, 10)}T12:00:00-03:00`)
+          : null;
+
+        if (!chave || !nome) throw new Error("CONTA_DADOS_OBRIGATORIOS");
+        if (nome.length > 100) throw new Error("CONTA_NOME_LONGO");
+        if (!(TIPOS_CONTA_FINANCEIRA as readonly string[]).includes(tipo)) {
+          throw new Error("CONTA_TIPO_INVALIDO");
+        }
+        if (!Number.isFinite(saldoInicial) || Math.abs(saldoInicial) > 999999999.99) {
+          throw new Error("CONTA_SALDO_INVALIDO");
+        }
+        if (saldoInicialEm && Number.isNaN(saldoInicialEm.getTime())) {
+          throw new Error("CONTA_DATA_INVALIDA");
+        }
+
+        const id = Number(item?.id);
+        let conta: any;
+        if (Number.isInteger(id) && id > 0) {
+          const existente = await tx.contaFinanceira.findFirst({
+            where: { id, organizacaoId },
+            select: { id: true },
+          });
+          if (!existente) throw new Error("CONTA_INVALIDA");
+          conta = await tx.contaFinanceira.update({
+            where: { id },
+            data: {
+              nome,
+              tipo: tipo as any,
+              saldoInicial,
+              saldoInicialEm,
+              ativo: item?.ativo !== false,
+            },
+          });
+        } else {
+          conta = await tx.contaFinanceira.create({
+            data: {
+              organizacaoId,
+              nome,
+              tipo: tipo as any,
+              saldoInicial,
+              saldoInicialEm,
+              ativo: item?.ativo !== false,
+            },
+          });
+        }
+        contasPorChave.set(chave, conta.id);
+      }
+
+      for (const item of operadorasRecebidas) {
+        const chave = String(item?.chave || "").trim();
+        const nome = String(item?.nome || "").trim();
+        if (!chave || !nome) throw new Error("OPERADORA_NOME_OBRIGATORIO");
+        if (nome.length > 100) throw new Error("OPERADORA_NOME_LONGO");
+
+        const id = Number(item?.id);
+        let operadora: any;
+        if (Number.isInteger(id) && id > 0) {
+          const existente = await tx.operadoraPagamento.findFirst({
+            where: { id, organizacaoId },
+            select: { id: true },
+          });
+          if (!existente) throw new Error("OPERADORA_INVALIDA");
+          operadora = await tx.operadoraPagamento.update({
+            where: { id },
+            data: { nome, ativo: item?.ativo !== false },
+          });
+        } else {
+          operadora = await tx.operadoraPagamento.create({
+            data: { organizacaoId, nome, ativo: item?.ativo !== false },
+          });
+        }
+        operadorasPorChave.set(chave, operadora.id);
+      }
+
+      for (const item of formasRecebidas) {
+        const nome = String(item?.nome || "").trim();
+        const forma = String(item?.forma || "").trim().toUpperCase();
+        if (!nome || nome.length > 120) throw new Error("FORMA_NOME_INVALIDO");
+        if (!(FORMAS_PAGAMENTO_CONFIGURAVEIS as readonly string[]).includes(forma)) {
+          throw new Error("FORMA_TIPO_INVALIDO");
+        }
+
+        const contaChave = String(item?.contaPadraoChave || "").trim();
+        const operadoraChave = String(item?.operadoraChave || "").trim();
+        const contaPadraoId = contaChave
+          ? contasPorChave.get(contaChave) || null
+          : null;
+        const operadoraId = operadoraChave
+          ? operadorasPorChave.get(operadoraChave) || null
+          : null;
+
+        if (contaChave && !contaPadraoId) throw new Error("FORMA_CONTA_INVALIDA");
+        if (operadoraChave && !operadoraId) throw new Error("FORMA_OPERADORA_INVALIDA");
+
+        const id = Number(item?.id);
+        let formaSalva: any;
+        if (Number.isInteger(id) && id > 0) {
+          const existente = await tx.formaRecebimento.findFirst({
+            where: { id, organizacaoId },
+            select: { id: true },
+          });
+          if (!existente) throw new Error("FORMA_INVALIDA");
+          formaSalva = await tx.formaRecebimento.update({
+            where: { id },
+            data: {
+              nome,
+              forma: forma as any,
+              operadoraId,
+              contaPadraoId,
+              ativo: item?.ativo !== false,
+            },
+          });
+        } else {
+          formaSalva = await tx.formaRecebimento.create({
+            data: {
+              organizacaoId,
+              nome,
+              forma: forma as any,
+              operadoraId,
+              contaPadraoId,
+              ativo: item?.ativo !== false,
+            },
+          });
+        }
+
+        const tarifas = Array.isArray(item?.tarifas) ? item.tarifas : [];
+        const parcelasEsperadas = forma === "CARTAO_CREDITO"
+          ? MAX_PARCELAS_CREDITO
+          : 1;
+        if (tarifas.length > MAX_PARCELAS_CREDITO) {
+          throw new Error("TARIFAS_DEMAIS");
+        }
+
+        for (let parcela = 1; parcela <= parcelasEsperadas; parcela += 1) {
+          const tarifaRecebida = tarifas.find(
+            (tarifa: any) => Number(tarifa?.parcelas || 1) === parcela
+          );
+          const percentual = Number(tarifaRecebida?.percentual || 0);
+          const fixa = Number(tarifaRecebida?.fixa || 0);
+
+          if (!Number.isFinite(percentual) || percentual < 0 || percentual > 100) {
+            throw new Error("TARIFA_PERCENTUAL_INVALIDO");
+          }
+          if (!Number.isFinite(fixa) || fixa < 0 || fixa > 999999.99) {
+            throw new Error("TARIFA_FIXA_INVALIDA");
+          }
+
+          await tx.tarifaFormaRecebimento.upsert({
+            where: {
+              formaRecebimentoId_parcelas: {
+                formaRecebimentoId: formaSalva.id,
+                parcelas: parcela,
+              },
+            },
+            create: {
+              formaRecebimentoId: formaSalva.id,
+              parcelas: parcela,
+              percentual,
+              fixa,
+              ativo: tarifaRecebida?.ativo !== false,
+            },
+            update: {
+              percentual,
+              fixa,
+              ativo: tarifaRecebida?.ativo !== false,
+            },
+          });
+        }
+      }
+
+      for (const forma of FORMAS_REPASSE_CONFIGURAVEIS) {
+        const recebido = padroesRecebidos.find(
+          (item: any) => String(item?.forma || "").toUpperCase() === forma
+        );
+        const contaChave = String(recebido?.contaChave || "").trim();
+        const contaFinanceiraId = contaChave
+          ? contasPorChave.get(contaChave) || null
+          : null;
+
+        if (contaChave && !contaFinanceiraId) {
+          throw new Error("REPASSE_CONTA_INVALIDA");
+        }
+
+        if (contaFinanceiraId) {
+          await tx.contaPadraoRepasse.upsert({
+            where: {
+              organizacaoId_forma: {
+                organizacaoId,
+                forma: forma as any,
+              },
+            },
+            create: {
+              organizacaoId,
+              forma: forma as any,
+              contaFinanceiraId,
+            },
+            update: { contaFinanceiraId },
+          });
+        } else {
+          await tx.contaPadraoRepasse.deleteMany({
+            where: { organizacaoId, forma: forma as any },
+          });
+        }
+      }
+    });
+
+    const configuracao = await buscarConfiguracaoRecebimentos(organizacaoId, true);
+    return res.json({
+      ok: true,
+      mensagem: "Contas e formas de recebimento atualizadas com sucesso.",
+      maxParcelasCredito: MAX_PARCELAS_CREDITO,
+      contas: configuracao.contas.map(serializarContaFinanceira),
+      operadoras: configuracao.operadoras.map((operadora: any) => ({
+        id: operadora.id,
+        nome: operadora.nome,
+        ativo: operadora.ativo,
+      })),
+      formasRecebimento: configuracao.formas.map(serializarFormaRecebimento),
+      contasPadraoRepasse: configuracao.padroesRepasse.map((item: any) => ({
+        forma: item.forma,
+        contaFinanceiraId: item.contaFinanceiraId,
+      })),
+    });
+  } catch (erro: any) {
+    console.error("Erro ao salvar configuração de recebimentos:", erro);
+    const mensagens: Record<string, string> = {
+      CONTA_DADOS_OBRIGATORIOS: "Informe o nome das contas financeiras.",
+      CONTA_NOME_LONGO: "O nome da conta financeira é muito longo.",
+      CONTA_TIPO_INVALIDO: "Tipo de conta financeira inválido.",
+      CONTA_SALDO_INVALIDO: "Saldo inicial da conta inválido.",
+      CONTA_DATA_INVALIDA: "Data do saldo inicial inválida.",
+      CONTA_INVALIDA: "Conta financeira inválida.",
+      OPERADORA_NOME_OBRIGATORIO: "Informe o nome das operadoras.",
+      OPERADORA_NOME_LONGO: "O nome da operadora é muito longo.",
+      OPERADORA_INVALIDA: "Operadora inválida.",
+      FORMA_NOME_INVALIDO: "Informe um nome válido para cada forma de recebimento.",
+      FORMA_TIPO_INVALIDO: "Tipo de forma de recebimento inválido.",
+      FORMA_CONTA_INVALIDA: "A conta padrão informada para uma forma de recebimento é inválida.",
+      FORMA_OPERADORA_INVALIDA: "A operadora informada para uma forma de recebimento é inválida.",
+      FORMA_INVALIDA: "Forma de recebimento inválida.",
+      REPASSE_CONTA_INVALIDA: "Conta padrão de repasse inválida.",
+      TARIFAS_DEMAIS: "Há tarifas demais para uma forma de recebimento.",
+      TARIFA_PERCENTUAL_INVALIDO: "Percentual de tarifa inválido.",
+      TARIFA_FIXA_INVALIDA: "Tarifa fixa inválida.",
+    };
+
+    if (erro?.code === "P2002") {
+      return res.status(409).json({
+        erro: "Já existe uma conta, operadora ou forma de recebimento com esse nome.",
+      });
+    }
+
+    if (erro instanceof Error && mensagens[erro.message]) {
+      return res.status(400).json({ erro: mensagens[erro.message] });
+    }
+
+    return res.status(500).json({
+      erro: "Não foi possível salvar as contas e formas de recebimento.",
+    });
+  }
+});
+
+
+app.get("/financeiro/tarifas", async (_req, res) => {
+  try {
+    const operadoras = await buscarOperadorasPagamento(
+      organizacaoAtualId(),
+      true
+    );
+
+    return res.json({
+      maxParcelasCredito: MAX_PARCELAS_CREDITO,
+      formasPagamento: FORMAS_PAGAMENTO_CONFIGURAVEIS.map((codigo) => ({
+        codigo,
+        label: ROTULOS_FORMAS_PAGAMENTO[codigo],
+      })),
+      operadoras: operadoras.map(serializarOperadoraPagamento),
+    });
+  } catch (erro) {
+    console.error("Erro ao carregar tarifas financeiras:", erro);
+    return res.status(500).json({
+      erro: "Não foi possível carregar as tarifas financeiras.",
+    });
+  }
+});
+
+app.put("/financeiro/tarifas", async (req, res) => {
+  try {
+    const organizacaoId = organizacaoAtualId();
+    const operadorasRecebidas = Array.isArray(req.body?.operadoras)
+      ? req.body.operadoras
+      : [];
+
+    if (operadorasRecebidas.length > 20) {
+      return res.status(400).json({
+        erro: "Cadastre no máximo 20 operadoras de pagamento.",
+      });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      for (const item of operadorasRecebidas) {
+        const nome = String(item?.nome || "").trim();
+        if (!nome) {
+          throw new Error("OPERADORA_NOME_OBRIGATORIO");
+        }
+        if (nome.length > 100) {
+          throw new Error("OPERADORA_NOME_LONGO");
+        }
+
+        const idRecebido = Number(item?.id);
+        let operadora: any;
+
+        if (Number.isInteger(idRecebido) && idRecebido > 0) {
+          const existente = await tx.operadoraPagamento.findFirst({
+            where: { id: idRecebido, organizacaoId },
+            select: { id: true },
+          });
+          if (!existente) throw new Error("OPERADORA_INVALIDA");
+
+          operadora = await tx.operadoraPagamento.update({
+            where: { id: idRecebido },
+            data: {
+              nome,
+              ativo: item?.ativo !== false,
+            },
+          });
+        } else {
+          operadora = await tx.operadoraPagamento.create({
+            data: {
+              organizacaoId,
+              nome,
+              ativo: item?.ativo !== false,
+            },
+          });
+        }
+
+        const tarifasRecebidas = Array.isArray(item?.tarifas)
+          ? item.tarifas
+          : [];
+
+        if (tarifasRecebidas.length > 100) {
+          throw new Error("TARIFAS_DEMAIS");
+        }
+
+        const chaves = new Set<string>();
+
+        for (const tarifaRecebida of tarifasRecebidas) {
+          const forma = String(tarifaRecebida?.forma || "").toUpperCase();
+
+          if (
+            !FORMAS_PAGAMENTO_CONFIGURAVEIS.includes(
+              forma as FormaPagamentoConfiguravel
+            )
+          ) {
+            throw new Error("TARIFA_FORMA_INVALIDA");
+          }
+
+          const formaTipada = forma as FormaPagamentoConfiguravel;
+          const parcelas = normalizarParcelasPagamento(
+            formaTipada,
+            tarifaRecebida?.parcelas
+          );
+          const percentual = Number(tarifaRecebida?.percentual || 0);
+          const fixa = Number(tarifaRecebida?.fixa || 0);
+
+          if (
+            !Number.isFinite(percentual) ||
+            percentual < 0 ||
+            percentual > 100
+          ) {
+            throw new Error("TARIFA_PERCENTUAL_INVALIDO");
+          }
+
+          if (!Number.isFinite(fixa) || fixa < 0 || fixa > 999999.99) {
+            throw new Error("TARIFA_FIXA_INVALIDA");
+          }
+
+          const chave = `${formaTipada}:${parcelas}`;
+          if (chaves.has(chave)) {
+            throw new Error("TARIFA_DUPLICADA");
+          }
+          chaves.add(chave);
+
+          await tx.tarifaPagamento.upsert({
+            where: {
+              operadoraId_forma_parcelas: {
+                operadoraId: operadora.id,
+                forma: formaTipada,
+                parcelas,
+              },
+            },
+            create: {
+              operadoraId: operadora.id,
+              forma: formaTipada,
+              parcelas,
+              percentual,
+              fixa,
+              ativo: tarifaRecebida?.ativo !== false,
+            },
+            update: {
+              percentual,
+              fixa,
+              ativo: tarifaRecebida?.ativo !== false,
+            },
+          });
+        }
+      }
+    });
+
+    const operadoras = await buscarOperadorasPagamento(organizacaoId, true);
+    return res.json({
+      ok: true,
+      maxParcelasCredito: MAX_PARCELAS_CREDITO,
+      operadoras: operadoras.map(serializarOperadoraPagamento),
+    });
+  } catch (erro: any) {
+    console.error("Erro ao salvar tarifas financeiras:", erro);
+
+    if (erro?.code === "P2002") {
+      return res.status(409).json({
+        erro: "Já existe uma operadora com esse nome.",
+      });
+    }
+
+    const mensagens: Record<string, string> = {
+      OPERADORA_NOME_OBRIGATORIO: "Informe o nome da operadora.",
+      OPERADORA_NOME_LONGO: "O nome da operadora pode ter no máximo 100 caracteres.",
+      OPERADORA_INVALIDA: "Operadora de pagamento inválida.",
+      TARIFAS_DEMAIS: "Há tarifas demais para uma única operadora.",
+      TARIFA_FORMA_INVALIDA: "Forma de pagamento inválida na tabela de tarifas.",
+      TARIFA_PERCENTUAL_INVALIDO: "A tarifa percentual deve ficar entre 0% e 100%.",
+      TARIFA_FIXA_INVALIDA: "A tarifa fixa informada é inválida.",
+      TARIFA_DUPLICADA: "Existe tarifa duplicada para a mesma forma e quantidade de parcelas.",
+      PARCELAS_INVALIDAS: `O cartão de crédito aceita de 1 a ${MAX_PARCELAS_CREDITO} parcelas.`,
+    };
+
+    if (erro instanceof Error && mensagens[erro.message]) {
+      return res.status(400).json({ erro: mensagens[erro.message] });
+    }
+
+    return res.status(500).json({
+      erro: "Não foi possível salvar as tarifas financeiras.",
     });
   }
 });
@@ -1704,15 +2440,18 @@ function mapearFormaPagamento(
   | "DINHEIRO"
   | "CARTAO_CREDITO"
   | "CARTAO_DEBITO"
+  | "BOLETO"
   | "TRANSFERENCIA"
   | "OUTRO" {
-  const valor = (forma || "").toLowerCase();
+  const valor = (forma || "").trim().toLowerCase();
 
   if (valor === "pix") return "PIX";
   if (valor === "dinheiro") return "DINHEIRO";
-  if (valor === "credito") return "CARTAO_CREDITO";
-  if (valor === "debito") return "CARTAO_DEBITO";
+  if (valor === "credito" || valor === "cartao_credito") return "CARTAO_CREDITO";
+  if (valor === "debito" || valor === "cartao_debito") return "CARTAO_DEBITO";
+  if (valor === "boleto") return "BOLETO";
   if (valor === "transferencia") return "TRANSFERENCIA";
+  if (valor === "outro") return "OUTRO";
 
   return "OUTRO";
 }
@@ -1781,9 +2520,11 @@ async function registrarEstornoVinculado(
     | "DINHEIRO"
     | "CARTAO_CREDITO"
     | "CARTAO_DEBITO"
+    | "BOLETO"
     | "TRANSFERENCIA"
     | "OUTRO",
-  motivo: string
+  motivo: string,
+  pagamentoIdAlvo?: number | null
 ) {
   let restante = Number(valorSolicitado) || 0;
 
@@ -1812,6 +2553,7 @@ async function registrarEstornoVinculado(
   const pagamentos = await tx.pagamento.findMany({
     where: {
       guiaId,
+      ...(pagamentoIdAlvo ? { id: pagamentoIdAlvo } : {}),
     },
     include: {
       estornos: true,
@@ -1872,31 +2614,87 @@ async function registrarEstornoVinculado(
         guiaId,
         pagamentoId: pagamento.id,
         valor: valorAplicado,
-        forma,
+        forma: pagamentoIdAlvo ? pagamento.forma : forma,
         motivo,
       },
     });
 
     estornosCriados.push(estornoCriado);
 
+    if (pagamento.contaFinanceiraId && valorAplicado > 0.009) {
+      await tx.movimentacaoConta.create({
+        data: {
+          organizacaoId,
+          contaFinanceiraId: pagamento.contaFinanceiraId,
+          tipo: "SAIDA",
+          origem: "ESTORNO",
+          valor: valorAplicado,
+          descricao: `Estorno ${codigoPublico}${
+            pagamento.formaRecebimentoNome
+              ? ` • ${pagamento.formaRecebimentoNome}`
+              : ""
+          }`,
+          dataMovimentacao: estornoCriado.criadoEm,
+          estornoId: estornoCriado.id,
+        },
+      });
+    }
+
     const vinculoRecibo = pagamento.recibos[0];
 
     if (vinculoRecibo?.recibo) {
-      const novoTotalEstornado =
-        totalEstornadoPagamento + valorAplicado;
-
-      await tx.recibo.update({
+      const reciboCompleto = await tx.recibo.findUnique({
         where: {
           id: vinculoRecibo.recibo.id,
         },
-        data: {
-          valorEstornado: novoTotalEstornado,
-          status:
-            novoTotalEstornado >= Number(pagamento.valor)
-              ? "ESTORNADO"
-              : "PARCIALMENTE_ESTORNADO",
+        include: {
+          pagamentos: {
+            include: {
+              pagamento: {
+                include: {
+                  estornos: true,
+                },
+              },
+            },
+          },
         },
       });
+
+      if (reciboCompleto) {
+        const totalRecebidoRecibo =
+          reciboCompleto.pagamentos.reduce(
+            (total: number, vinculo: any) =>
+              total + Number(vinculo.pagamento.valor),
+            0
+          );
+        const totalEstornadoRecibo =
+          reciboCompleto.pagamentos.reduce(
+            (total: number, vinculo: any) =>
+              total +
+              vinculo.pagamento.estornos.reduce(
+                (subtotal: number, estorno: any) =>
+                  subtotal + Number(estorno.valor),
+                0
+              ),
+            0
+          );
+
+        await tx.recibo.update({
+          where: {
+            id: reciboCompleto.id,
+          },
+          data: {
+            valorRecebido: totalRecebidoRecibo,
+            valorEstornado: totalEstornadoRecibo,
+            status:
+              totalEstornadoRecibo >= totalRecebidoRecibo
+                ? "ESTORNADO"
+                : totalEstornadoRecibo > 0
+                  ? "PARCIALMENTE_ESTORNADO"
+                  : "ATIVO",
+          },
+        });
+      }
     }
 
     restante -= valorAplicado;
@@ -10565,9 +11363,7 @@ app.post("/guias/:id/confirmar-realizacao", async (req, res) => {
 app.post("/guias/:id/pagamentos", async (req, res) => {
   try {
     const guiaId = Number(req.params.id);
-    const valor = Number(req.body?.valor) || 0;
-    const forma = mapearFormaPagamento(req.body?.forma);
-    const observacao =
+    const observacaoGeral =
       String(req.body?.observacao || "").trim() || null;
 
     if (!guiaId) {
@@ -10576,9 +11372,13 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
       });
     }
 
-    if (valor <= 0) {
+    const recebidos = Array.isArray(req.body?.pagamentos)
+      ? req.body.pagamentos
+      : [req.body];
+
+    if (recebidos.length === 0 || recebidos.length > 20) {
       return res.status(400).json({
-        erro: "Informe um valor de pagamento válido.",
+        erro: "Informe de 1 a 20 partes de pagamento.",
       });
     }
 
@@ -10604,48 +11404,269 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
       }
 
       const totalPago = guia.pagamentos.reduce(
-        (total, pagamento) =>
-          total + Number(pagamento.valor),
+        (total, pagamento) => total + Number(pagamento.valor),
         0
       );
-
       const totalEstornado = guia.estornos.reduce(
-        (total, estorno) =>
-          total + Number(estorno.valor),
+        (total, estorno) => total + Number(estorno.valor),
         0
       );
+      const pagoLiquido = Math.max(totalPago - totalEstornado, 0);
+      const saldo = Math.max(Number(guia.valorFinal) - pagoLiquido, 0);
+      const organizacaoId = guia.organizacaoId || organizacaoAtualId();
 
-      const pagoLiquido = Math.max(
-        totalPago - totalEstornado,
-        0
+      const [organizacao, contasAtivas] = await Promise.all([
+        tx.organizacao.findUnique({
+          where: { id: organizacaoId },
+          select: { formasPagamentoHabilitadas: true },
+        }),
+        tx.contaFinanceira.findMany({
+          where: { organizacaoId, ativo: true },
+          select: { id: true, nome: true },
+        }),
+      ]);
+
+      const formasHabilitadas = normalizarFormasPagamentoConfiguradas(
+        organizacao?.formasPagamentoHabilitadas
+      );
+      const formasPermitidas =
+        formasHabilitadas.length > 0
+          ? formasHabilitadas
+          : [...FORMAS_PAGAMENTO_CONFIGURAVEIS];
+      const contasPorId = new Map(
+        contasAtivas.map((conta: any) => [conta.id, conta])
       );
 
-      const saldo = Math.max(
-        Number(guia.valorFinal) - pagoLiquido,
-        0
-      );
+      const preparados: Array<{
+        valor: number;
+        forma: FormaPagamentoConfiguravel;
+        parcelas: number;
+        operadoraId: number | null;
+        formaRecebimentoId: number | null;
+        contaFinanceiraId: number | null;
+        contaPadraoIdSnapshot: number | null;
+        contaAlteradaManualmente: boolean;
+        formaRecebimentoNome: string | null;
+        operadoraNome: string | null;
+        contaFinanceiraNome: string | null;
+        taxaPercentualAplicada: number;
+        taxaFixaAplicada: number;
+        valorTarifa: number;
+        valorLiquido: number;
+        observacao: string | null;
+      }> = [];
 
-      if (valor > saldo + 0.009) {
+      let totalNovo = 0;
+
+      for (const recebido of recebidos) {
+        const valor = arredondarCentavos(Number(recebido?.valor) || 0);
+        if (valor <= 0) {
+          throw new Error("PAGAMENTO_VALOR_INVALIDO");
+        }
+
+        const formaRecebimentoIdRecebida = Number(recebido?.formaRecebimentoId);
+        const formaRecebimentoId =
+          Number.isInteger(formaRecebimentoIdRecebida) &&
+          formaRecebimentoIdRecebida > 0
+            ? formaRecebimentoIdRecebida
+            : null;
+
+        let forma: FormaPagamentoConfiguravel;
+        let parcelas = 1;
+        let operadoraId: number | null = null;
+        let formaRecebimentoNome: string | null = null;
+        let operadoraNome: string | null = null;
+        let contaPadraoIdSnapshot: number | null = null;
+        let percentual = 0;
+        let fixa = 0;
+
+        if (formaRecebimentoId) {
+          const formaConfigurada = await tx.formaRecebimento.findFirst({
+            where: {
+              id: formaRecebimentoId,
+              organizacaoId,
+              ativo: true,
+            },
+            include: {
+              operadora: { select: { id: true, nome: true, ativo: true } },
+              contaPadrao: { select: { id: true, nome: true, ativo: true } },
+            },
+          });
+
+          if (!formaConfigurada) {
+            throw new Error("PAGAMENTO_FORMA_CONFIGURADA_INVALIDA");
+          }
+
+          forma = formaConfigurada.forma as FormaPagamentoConfiguravel;
+          formaRecebimentoNome = formaConfigurada.nome;
+          operadoraId = formaConfigurada.operadoraId || null;
+          operadoraNome = formaConfigurada.operadora?.nome || null;
+          contaPadraoIdSnapshot =
+            formaConfigurada.contaPadrao?.ativo
+              ? formaConfigurada.contaPadraoId || null
+              : null;
+          parcelas = normalizarParcelasPagamento(forma, recebido?.parcelas);
+
+          const tarifa = await tx.tarifaFormaRecebimento.findUnique({
+            where: {
+              formaRecebimentoId_parcelas: {
+                formaRecebimentoId,
+                parcelas,
+              },
+            },
+          });
+          if (tarifa?.ativo) {
+            percentual = Number(tarifa.percentual || 0);
+            fixa = Number(tarifa.fixa || 0);
+          }
+        } else {
+          // Compatibilidade com registros/telas anteriores à configuração personalizada.
+          forma = mapearFormaPagamento(
+            String(recebido?.forma || "")
+          ) as FormaPagamentoConfiguravel;
+          parcelas = normalizarParcelasPagamento(forma, recebido?.parcelas);
+
+          const operadoraIdRecebida = Number(recebido?.operadoraId);
+          operadoraId =
+            Number.isInteger(operadoraIdRecebida) && operadoraIdRecebida > 0
+              ? operadoraIdRecebida
+              : null;
+
+          if (operadoraId) {
+            const operadora = await tx.operadoraPagamento.findFirst({
+              where: { id: operadoraId, organizacaoId, ativo: true },
+              select: { id: true, nome: true },
+            });
+            if (!operadora) throw new Error("PAGAMENTO_OPERADORA_INVALIDA");
+            operadoraNome = operadora.nome;
+
+            const tarifa = await tx.tarifaPagamento.findUnique({
+              where: {
+                operadoraId_forma_parcelas: {
+                  operadoraId,
+                  forma,
+                  parcelas,
+                },
+              },
+            });
+            if (tarifa?.ativo) {
+              percentual = Number(tarifa.percentual || 0);
+              fixa = Number(tarifa.fixa || 0);
+            }
+          }
+        }
+
+        if (!formasPermitidas.includes(forma)) {
+          throw new Error("PAGAMENTO_FORMA_DESABILITADA");
+        }
+
+        const contaRecebida = Number(recebido?.contaFinanceiraId);
+        const contaRecebidaId =
+          Number.isInteger(contaRecebida) && contaRecebida > 0
+            ? contaRecebida
+            : null;
+        const contaFinanceiraId =
+          contaRecebidaId || contaPadraoIdSnapshot || null;
+        let contaFinanceiraNome: string | null = null;
+
+        if (contaFinanceiraId) {
+          const conta = contasPorId.get(contaFinanceiraId);
+          if (!conta) throw new Error("PAGAMENTO_CONTA_INVALIDA");
+          contaFinanceiraNome = conta.nome;
+        } else if (contasAtivas.length > 0) {
+          throw new Error("PAGAMENTO_CONTA_OBRIGATORIA");
+        }
+
+        const calculo = calcularTarifaPagamento(valor, percentual, fixa);
+        totalNovo = arredondarCentavos(totalNovo + valor);
+
+        preparados.push({
+          valor,
+          forma,
+          parcelas,
+          operadoraId,
+          formaRecebimentoId,
+          contaFinanceiraId,
+          contaPadraoIdSnapshot,
+          contaAlteradaManualmente:
+            contaPadraoIdSnapshot !== null &&
+            contaFinanceiraId !== contaPadraoIdSnapshot,
+          formaRecebimentoNome,
+          operadoraNome,
+          contaFinanceiraNome,
+          taxaPercentualAplicada: percentual,
+          taxaFixaAplicada: fixa,
+          valorTarifa: calculo.valorTarifa,
+          valorLiquido: calculo.valorLiquido,
+          observacao:
+            String(recebido?.observacao || "").trim() || observacaoGeral,
+        });
+      }
+
+      if (totalNovo > saldo + 0.009) {
         throw new Error("PAGAMENTO_SUPERIOR_AO_SALDO");
       }
 
-      const pagamento = await tx.pagamento.create({
-        data: {
-          guiaId,
-          valor,
-          forma,
-          observacao,
-        },
-      });
+      const pagamentosCriados = [];
 
-      const financeiro =
-        await recalcularStatusFinanceiroGuia(
-          tx,
-          guiaId
-        );
+      for (const preparado of preparados) {
+        const pagamento = await tx.pagamento.create({
+          data: {
+            guiaId,
+            valor: preparado.valor,
+            forma: preparado.forma,
+            parcelas: preparado.parcelas,
+            operadoraId: preparado.operadoraId,
+            formaRecebimentoId: preparado.formaRecebimentoId,
+            contaFinanceiraId: preparado.contaFinanceiraId,
+            contaPadraoIdSnapshot: preparado.contaPadraoIdSnapshot,
+            contaAlteradaManualmente: preparado.contaAlteradaManualmente,
+            formaRecebimentoNome: preparado.formaRecebimentoNome,
+            operadoraNome: preparado.operadoraNome,
+            contaFinanceiraNome: preparado.contaFinanceiraNome,
+            taxaPercentualAplicada: preparado.taxaPercentualAplicada,
+            taxaFixaAplicada: preparado.taxaFixaAplicada,
+            valorTarifa: preparado.valorTarifa,
+            valorLiquido: preparado.valorLiquido,
+            observacao: preparado.observacao,
+          },
+          include: {
+            operadora: { select: { id: true, nome: true } },
+            contaFinanceira: { select: { id: true, nome: true } },
+            formaRecebimento: { select: { id: true, nome: true } },
+          },
+        });
+
+        if (
+          preparado.contaFinanceiraId &&
+          preparado.valorLiquido > 0.009
+        ) {
+          await tx.movimentacaoConta.create({
+            data: {
+              organizacaoId,
+              contaFinanceiraId: preparado.contaFinanceiraId,
+              tipo: "ENTRADA",
+              origem: "PAGAMENTO",
+              valor: preparado.valorLiquido,
+              descricao: `Recebimento ${guia.codigoPublico || `Guia #${guia.id}`}${
+                preparado.formaRecebimentoNome
+                  ? ` • ${preparado.formaRecebimentoNome}`
+                  : ""
+              }`,
+              dataMovimentacao: pagamento.criadoEm,
+              pagamentoId: pagamento.id,
+            },
+          });
+        }
+
+        pagamentosCriados.push(pagamento);
+      }
+
+      const financeiro = await recalcularStatusFinanceiroGuia(tx, guiaId);
 
       return {
-        pagamento,
+        pagamento: pagamentosCriados[0] || null,
+        pagamentos: pagamentosCriados,
         financeiro,
       };
     });
@@ -10654,31 +11675,49 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
   } catch (erro) {
     console.error("Erro ao registrar pagamento:", erro);
 
-    if (
-      erro instanceof Error &&
-      erro.message === "GUIA_NAO_ENCONTRADA"
-    ) {
-      return res.status(404).json({
-        erro: "Guia não encontrada.",
-      });
-    }
-
-    if (
-      erro instanceof Error &&
-      erro.message === "PAGAMENTO_GUIA_CANCELADA"
-    ) {
-      return res.status(400).json({
+    const mensagens: Record<string, { status: number; erro: string }> = {
+      GUIA_NAO_ENCONTRADA: { status: 404, erro: "Guia não encontrada." },
+      PAGAMENTO_GUIA_CANCELADA: {
+        status: 400,
         erro: "Não é permitido registrar pagamento em uma guia cancelada.",
-      });
-    }
+      },
+      PAGAMENTO_SUPERIOR_AO_SALDO: {
+        status: 400,
+        erro: "A soma dos pagamentos não pode ser maior que o saldo pendente da guia.",
+      },
+      PAGAMENTO_VALOR_INVALIDO: {
+        status: 400,
+        erro: "Informe valores de pagamento válidos.",
+      },
+      PAGAMENTO_FORMA_DESABILITADA: {
+        status: 400,
+        erro: "Uma das formas de pagamento está desabilitada nas configurações.",
+      },
+      PAGAMENTO_FORMA_CONFIGURADA_INVALIDA: {
+        status: 400,
+        erro: "A forma de recebimento selecionada é inválida ou está inativa.",
+      },
+      PAGAMENTO_OPERADORA_INVALIDA: {
+        status: 400,
+        erro: "A operadora de pagamento informada é inválida ou está inativa.",
+      },
+      PAGAMENTO_CONTA_INVALIDA: {
+        status: 400,
+        erro: "A conta financeira selecionada é inválida ou está inativa.",
+      },
+      PAGAMENTO_CONTA_OBRIGATORIA: {
+        status: 400,
+        erro: "Selecione a conta financeira que receberá esta parte do pagamento.",
+      },
+      PARCELAS_INVALIDAS: {
+        status: 400,
+        erro: `O cartão de crédito aceita de 1 a ${MAX_PARCELAS_CREDITO} parcelas.`,
+      },
+    };
 
-    if (
-      erro instanceof Error &&
-      erro.message === "PAGAMENTO_SUPERIOR_AO_SALDO"
-    ) {
-      return res.status(400).json({
-        erro: "O pagamento não pode ser maior que o saldo pendente da guia.",
-      });
+    if (erro instanceof Error && mensagens[erro.message]) {
+      const resposta = mensagens[erro.message];
+      return res.status(resposta.status).json({ erro: resposta.erro });
     }
 
     return res.status(500).json({
@@ -10687,11 +11726,85 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
   }
 });
 
+
+app.get("/guias/:id/pagamentos-estornaveis", async (req, res) => {
+  try {
+    const guiaId = Number(req.params.id);
+
+    if (!Number.isInteger(guiaId) || guiaId <= 0) {
+      return res.status(400).json({
+        erro: "ID da guia inválido.",
+      });
+    }
+
+    const guia = await prisma.guia.findUnique({
+      where: { id: guiaId },
+      select: { id: true },
+    });
+
+    if (!guia) {
+      return res.status(404).json({
+        erro: "Guia não encontrada.",
+      });
+    }
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where: { guiaId },
+      include: {
+        estornos: true,
+      },
+      orderBy: {
+        id: "asc",
+      },
+    });
+
+    const estornaveis = pagamentos
+      .map((pagamento) => {
+        const totalEstornado = pagamento.estornos.reduce(
+          (total, estorno) => total + Number(estorno.valor),
+          0
+        );
+        const valor = Number(pagamento.valor);
+        const disponivel = Math.max(valor - totalEstornado, 0);
+
+        return {
+          id: pagamento.id,
+          valor,
+          totalEstornado,
+          disponivel,
+          forma: pagamento.forma,
+          formaLabel: rotuloFormaPagamentoFinanceiro(pagamento.forma),
+          parcelas: Number(pagamento.parcelas || 1),
+          formaRecebimento: pagamento.formaRecebimentoNome || null,
+          operadora: pagamento.operadoraNome || null,
+          contaFinanceira: pagamento.contaFinanceiraNome || null,
+          criadoEm: pagamento.criadoEm,
+        };
+      })
+      .filter((pagamento) => pagamento.disponivel > 0.009);
+
+    return res.json({
+      guiaId,
+      pagamentos: estornaveis,
+      disponivelTotal: estornaveis.reduce(
+        (total, pagamento) => total + pagamento.disponivel,
+        0
+      ),
+    });
+  } catch (erro) {
+    console.error("Erro ao carregar pagamentos estornáveis:", erro);
+    return res.status(500).json({
+      erro: "Não foi possível carregar os recebimentos disponíveis para estorno.",
+    });
+  }
+});
+
+
 app.post("/guias/:id/estornos", async (req, res) => {
   try {
     const guiaId = Number(req.params.id);
     const valor = Number(req.body?.valor) || 0;
-    const forma = mapearFormaPagamento(req.body?.forma);
+    const pagamentoId = Number(req.body?.pagamentoId);
     const motivo =
       String(req.body?.motivo || "").trim() ||
       "Estorno registrado no atendimento.";
@@ -10708,6 +11821,12 @@ app.post("/guias/:id/estornos", async (req, res) => {
       });
     }
 
+    if (!Number.isInteger(pagamentoId) || pagamentoId <= 0) {
+      return res.status(400).json({
+        erro: "Selecione o recebimento de origem do estorno.",
+      });
+    }
+
     const resultado = await prisma.$transaction(async (tx) => {
       const guia = await tx.guia.findUnique({
         where: { id: guiaId },
@@ -10721,33 +11840,41 @@ app.post("/guias/:id/estornos", async (req, res) => {
         throw new Error("GUIA_NAO_ENCONTRADA");
       }
 
-      const totalPago = guia.pagamentos.reduce(
-        (total, pagamento) =>
-          total + Number(pagamento.valor),
+      const pagamentoOrigem = await tx.pagamento.findFirst({
+        where: {
+          id: pagamentoId,
+          guiaId,
+        },
+        include: {
+          estornos: true,
+        },
+      });
+
+      if (!pagamentoOrigem) {
+        throw new Error("PAGAMENTO_ESTORNO_INVALIDO");
+      }
+
+      const totalEstornadoPagamento = pagamentoOrigem.estornos.reduce(
+        (total, estorno) => total + Number(estorno.valor),
         0
       );
 
-      const totalEstornado = guia.estornos.reduce(
-        (total, estorno) =>
-          total + Number(estorno.valor),
+      const disponivelPagamento = Math.max(
+        Number(pagamentoOrigem.valor) - totalEstornadoPagamento,
         0
       );
 
-      const disponivel = Math.max(
-        totalPago - totalEstornado,
-        0
-      );
-
-      if (valor > disponivel + 0.009) {
-        throw new Error("ESTORNO_SUPERIOR_AO_PAGO");
+      if (valor > disponivelPagamento + 0.009) {
+        throw new Error("ESTORNO_SUPERIOR_AO_PAGAMENTO");
       }
 
       const estornos = await registrarEstornoVinculado(
         tx,
         guiaId,
         valor,
-        forma,
-        motivo
+        pagamentoOrigem.forma,
+        motivo,
+        pagamentoId
       );
 
       const financeiro =
@@ -10777,10 +11904,28 @@ app.post("/guias/:id/estornos", async (req, res) => {
 
     if (
       erro instanceof Error &&
+      erro.message === "PAGAMENTO_ESTORNO_INVALIDO"
+    ) {
+      return res.status(400).json({
+        erro: "O recebimento selecionado não pertence a esta guia.",
+      });
+    }
+
+    if (
+      erro instanceof Error &&
+      erro.message === "ESTORNO_SUPERIOR_AO_PAGAMENTO"
+    ) {
+      return res.status(400).json({
+        erro: "O estorno não pode ser maior que o valor ainda disponível nesse recebimento.",
+      });
+    }
+
+    if (
+      erro instanceof Error &&
       erro.message === "ESTORNO_SUPERIOR_AO_PAGO"
     ) {
       return res.status(400).json({
-        erro: "O estorno não pode ser maior que o valor líquido recebido.",
+        erro: "O estorno não pode ser maior que o valor recebido disponível.",
       });
     }
 
@@ -10876,7 +12021,13 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
               include: {
                 pagamentos: {
                   include: {
-                    pagamento: true,
+                    pagamento: {
+                      include: {
+                        operadora: {
+                          select: { id: true, nome: true },
+                        },
+                      },
+                    },
                   },
                 },
               },
@@ -10927,6 +12078,17 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
           id: vinculo.pagamento.id,
           valor: vinculo.pagamento.valor,
           forma: vinculo.pagamento.forma,
+          parcelas: vinculo.pagamento.parcelas,
+          formaRecebimento:
+            vinculo.pagamento.formaRecebimentoNome || null,
+          operadora:
+            vinculo.pagamento.operadoraNome ||
+            vinculo.pagamento.operadora?.nome ||
+            null,
+          contaFinanceira:
+            vinculo.pagamento.contaFinanceiraNome || null,
+          valorTarifa: vinculo.pagamento.valorTarifa,
+          valorLiquido: vinculo.pagamento.valorLiquido,
           criadoEm: vinculo.pagamento.criadoEm,
         })),
       }))
@@ -11066,11 +12228,11 @@ app.post("/guias/:id/recibo", async (req, res) => {
       });
     }
 
-    const pagamentoSemRecibo = guia.pagamentos.find(
+    const pagamentosSemRecibo = guia.pagamentos.filter(
       (pagamento) => pagamento.recibos.length === 0
     );
 
-    if (!pagamentoSemRecibo) {
+    if (pagamentosSemRecibo.length === 0) {
       const reciboExistente = guia.recibos[0];
 
       if (reciboExistente) {
@@ -11082,10 +12244,18 @@ app.post("/guias/:id/recibo", async (req, res) => {
       });
     }
 
-    const valorRecebido = Number(pagamentoSemRecibo.valor);
+    const valorRecebido = pagamentosSemRecibo.reduce(
+      (total, pagamento) => total + Number(pagamento.valor),
+      0
+    );
 
-    const valorJaEstornado = pagamentoSemRecibo.estornos.reduce(
-      (total, estorno) => total + Number(estorno.valor),
+    const valorJaEstornado = pagamentosSemRecibo.reduce(
+      (total, pagamento) =>
+        total +
+        pagamento.estornos.reduce(
+          (subtotal, estorno) => subtotal + Number(estorno.valor),
+          0
+        ),
       0
     );
 
@@ -11162,9 +12332,9 @@ app.post("/guias/:id/recibo", async (req, res) => {
             procedimentos || "Procedimentos não informados",
 
           pagamentos: {
-            create: {
-              pagamentoId: pagamentoSemRecibo.id,
-            },
+            create: pagamentosSemRecibo.map((pagamento) => ({
+              pagamentoId: pagamento.id,
+            })),
           },
         },
         include: {
@@ -11287,6 +12457,7 @@ function rotuloFormaPagamentoFinanceiro(forma: string) {
     DINHEIRO: "Dinheiro",
     CARTAO_CREDITO: "Cartão de crédito",
     CARTAO_DEBITO: "Cartão de débito",
+    BOLETO: "Boleto",
     TRANSFERENCIA: "Transferência",
     OUTRO: "Outro",
   };
@@ -11307,16 +12478,11 @@ app.get("/financeiro/resumo", async (req, res) => {
 
     const organizacaoId = organizacaoAtualId();
 
-    const [guias, clinicas] = await Promise.all([
+    const [guias, clinicas, contasFinanceiras, totaisContas, totaisContasPeriodo] = await Promise.all([
       prisma.guia.findMany({
         where: {
           AND: [
-            {
-              OR: [
-                { organizacaoId },
-                { organizacaoId: null },
-              ],
-            },
+            { OR: [{ organizacaoId }, { organizacaoId: null }] },
             ...(clinicaIdRecebida ? [{ clinicaId: clinicaIdRecebida }] : []),
           ],
         },
@@ -11325,37 +12491,35 @@ app.get("/financeiro/resumo", async (req, res) => {
           atendimento: {
             include: {
               paciente: {
-                select: {
-                  id: true,
-                  codigoPublico: true,
-                  nome: true,
-                  cpf: true,
-                },
+                select: { id: true, codigoPublico: true, nome: true, cpf: true },
               },
             },
           },
-          itens: {
-            select: {
-              id: true,
-              status: true,
-              valorRepasse: true,
-            },
-          },
+          itens: { select: { id: true, status: true, valorRepasse: true } },
           pagamentos: {
+            include: {
+              operadora: { select: { id: true, nome: true } },
+              contaFinanceira: { select: { id: true, nome: true } },
+              formaRecebimento: { select: { id: true, nome: true } },
+            },
             orderBy: { criadoEm: "asc" },
           },
           estornos: {
+            include: {
+              pagamento: {
+                select: {
+                  contaFinanceiraId: true,
+                  contaFinanceiraNome: true,
+                  formaRecebimentoNome: true,
+                },
+              },
+            },
             orderBy: { criadoEm: "asc" },
           },
           repasses: {
             include: {
               repasse: {
-                select: {
-                  id: true,
-                  status: true,
-                  pagoEm: true,
-                  solicitadoEm: true,
-                },
+                select: { id: true, status: true, pagoEm: true, solicitadoEm: true },
               },
             },
           },
@@ -11367,10 +12531,28 @@ app.get("/financeiro/resumo", async (req, res) => {
         select: { id: true, nome: true },
         orderBy: { nome: "asc" },
       }),
+      prisma.contaFinanceira.findMany({
+        where: { organizacaoId },
+        orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+      }),
+      prisma.movimentacaoConta.groupBy({
+        by: ["contaFinanceiraId", "tipo"],
+        where: { organizacaoId },
+        _sum: { valor: true },
+      }),
+      prisma.movimentacaoConta.groupBy({
+        by: ["contaFinanceiraId", "tipo"],
+        where: {
+          organizacaoId,
+          dataMovimentacao: { gte: inicio, lte: fim },
+        },
+        _sum: { valor: true },
+      }),
     ]);
 
     let recebidoBruto = 0;
     let totalEstornos = 0;
+    let tarifasFinanceiras = 0;
     const movimentacoes: Array<{
       id: string;
       tipo: "RECEBIMENTO" | "ESTORNO";
@@ -11378,6 +12560,14 @@ app.get("/financeiro/resumo", async (req, res) => {
       valor: number;
       forma: string;
       formaLabel: string;
+      formaRecebimento: string | null;
+      parcelas: number;
+      operadora: string | null;
+      contaFinanceira: string | null;
+      taxaPercentual: number;
+      taxaFixa: number;
+      valorTarifa: number;
+      valorLiquido: number;
       observacao: string | null;
       guiaId: number;
       codigoVoucher: string | null;
@@ -11387,33 +12577,8 @@ app.get("/financeiro/resumo", async (req, res) => {
       clinica: string;
     }> = [];
 
-    const guiasAReceber: Array<{
-      guiaId: number;
-      codigoVoucher: string | null;
-      pacienteId: number;
-      paciente: string;
-      clinicaId: number;
-      clinica: string;
-      valorFinal: number;
-      pagoLiquido: number;
-      saldo: number;
-      criadoEm: Date;
-      status: string;
-    }> = [];
-
-    const repassesAPagar: Array<{
-      guiaId: number;
-      codigoVoucher: string | null;
-      pacienteId: number;
-      paciente: string;
-      clinicaId: number;
-      clinica: string;
-      confirmadoEm: Date;
-      valorPrevisto: number;
-      valorPago: number;
-      saldo: number;
-      statusRepasse: string | null;
-    }> = [];
+    const guiasAReceber: Array<any> = [];
+    const repassesAPagar: Array<any> = [];
 
     for (const guia of guias) {
       const paciente = guia.atendimento.paciente;
@@ -11421,7 +12586,13 @@ app.get("/financeiro/resumo", async (req, res) => {
       for (const pagamento of guia.pagamentos) {
         if (!dentroDoPeriodoFinanceiro(pagamento.criadoEm, inicio, fim)) continue;
         const valor = Number(pagamento.valor);
+        const valorTarifa = Number(pagamento.valorTarifa || 0);
+        const valorLiquido =
+          pagamento.valorLiquido === null || pagamento.valorLiquido === undefined
+            ? arredondarCentavos(valor - valorTarifa)
+            : Number(pagamento.valorLiquido);
         recebidoBruto += valor;
+        tarifasFinanceiras += valorTarifa;
         movimentacoes.push({
           id: `PAG-${pagamento.id}`,
           tipo: "RECEBIMENTO",
@@ -11429,6 +12600,21 @@ app.get("/financeiro/resumo", async (req, res) => {
           valor,
           forma: pagamento.forma,
           formaLabel: rotuloFormaPagamentoFinanceiro(pagamento.forma),
+          formaRecebimento:
+            pagamento.formaRecebimentoNome ||
+            pagamento.formaRecebimento?.nome ||
+            null,
+          parcelas: Number(pagamento.parcelas || 1),
+          operadora:
+            pagamento.operadoraNome || pagamento.operadora?.nome || null,
+          contaFinanceira:
+            pagamento.contaFinanceiraNome ||
+            pagamento.contaFinanceira?.nome ||
+            null,
+          taxaPercentual: Number(pagamento.taxaPercentualAplicada || 0),
+          taxaFixa: Number(pagamento.taxaFixaAplicada || 0),
+          valorTarifa,
+          valorLiquido,
           observacao: pagamento.observacao,
           guiaId: guia.id,
           codigoVoucher: guia.codigoPublico,
@@ -11450,6 +12636,14 @@ app.get("/financeiro/resumo", async (req, res) => {
           valor,
           forma: estorno.forma,
           formaLabel: rotuloFormaPagamentoFinanceiro(estorno.forma),
+          formaRecebimento: estorno.pagamento?.formaRecebimentoNome || null,
+          parcelas: 1,
+          operadora: null,
+          contaFinanceira: estorno.pagamento?.contaFinanceiraNome || null,
+          taxaPercentual: 0,
+          taxaFixa: 0,
+          valorTarifa: 0,
+          valorLiquido: -valor,
           observacao: estorno.motivo,
           guiaId: guia.id,
           codigoVoucher: guia.codigoPublico,
@@ -11497,13 +12691,13 @@ app.get("/financeiro/resumo", async (req, res) => {
         const valorPrevisto = guia.itens
           .filter((item) => item.status !== "CANCELADO")
           .reduce((total, item) => total + Number(item.valorRepasse), 0);
-
         const valorRepassePago = guia.repasses
           .filter((item) => item.repasse.status === "PAGO")
           .reduce((total, item) => total + Number(item.valor), 0);
-
         const saldoRepasse = Math.max(valorPrevisto - valorRepassePago, 0);
-        const repasseAberto = guia.repasses.find((item) => !["PAGO", "RECUSADO"].includes(item.repasse.status));
+        const repasseAberto = guia.repasses.find(
+          (item) => !["PAGO", "RECUSADO"].includes(item.repasse.status)
+        );
 
         if (saldoRepasse > 0.009) {
           repassesAPagar.push({
@@ -11530,13 +12724,52 @@ app.get("/financeiro/resumo", async (req, res) => {
     const valorAReceber = guiasAReceber.reduce((total, guia) => total + guia.saldo, 0);
     const valorRepassesAPagar = repassesAPagar.reduce((total, guia) => total + guia.saldo, 0);
 
+    const valorAgrupado = (lista: any[], contaId: number, tipo: string) =>
+      lista
+        .filter((item) => item.contaFinanceiraId === contaId && item.tipo === tipo)
+        .reduce((total, item) => total + Number(item._sum?.valor || 0), 0);
+
+    const contas = contasFinanceiras.map((conta) => {
+      const entradas = valorAgrupado(totaisContas, conta.id, "ENTRADA");
+      const saidas = valorAgrupado(totaisContas, conta.id, "SAIDA");
+      const entradasPeriodo = valorAgrupado(
+        totaisContasPeriodo,
+        conta.id,
+        "ENTRADA"
+      );
+      const saidasPeriodo = valorAgrupado(
+        totaisContasPeriodo,
+        conta.id,
+        "SAIDA"
+      );
+      const saldoInicial = Number(conta.saldoInicial || 0);
+
+      return {
+        id: conta.id,
+        nome: conta.nome,
+        tipo: conta.tipo,
+        tipoLabel: rotuloTipoContaFinanceira(conta.tipo),
+        ativo: conta.ativo,
+        saldoInicial,
+        saldoInicialEm: conta.saldoInicialEm,
+        entradas,
+        saidas,
+        saldoAtual: arredondarCentavos(saldoInicial + entradas - saidas),
+        entradasPeriodo,
+        saidasPeriodo,
+        variacaoPeriodo: arredondarCentavos(entradasPeriodo - saidasPeriodo),
+      };
+    });
+
     return res.json({
       periodo: { inicio: inicioTexto, fim: fimTexto },
       filtro: { clinicaId: clinicaIdRecebida },
       resumo: {
         recebidoBruto,
         estornos: totalEstornos,
-        recebidoLiquido: recebidoBruto - totalEstornos,
+        tarifasFinanceiras,
+        recebidoAntesTarifas: recebidoBruto - totalEstornos,
+        recebidoLiquido: recebidoBruto - totalEstornos - tarifasFinanceiras,
         aReceber: valorAReceber,
         repassesAPagar: valorRepassesAPagar,
         quantidadeRecebimentos: movimentacoes.filter((item) => item.tipo === "RECEBIMENTO").length,
@@ -11545,6 +12778,7 @@ app.get("/financeiro/resumo", async (req, res) => {
         quantidadeRepassesAPagar: repassesAPagar.length,
       },
       clinicas,
+      contas,
       movimentacoes: movimentacoes.slice(0, 150),
       guiasAReceber: guiasAReceber.slice(0, 100),
       repassesAPagar: repassesAPagar.slice(0, 100),
@@ -11786,7 +13020,14 @@ app.get("/financeiro/repasses", async (req, res) => {
 
     const whereRepasses: any = { AND: filtrosRepasse };
 
-    const [clinicas, guiasConfirmadas, repasses, totalRepasses] = await Promise.all([
+    const [
+      clinicas,
+      guiasConfirmadas,
+      repasses,
+      totalRepasses,
+      contasFinanceiras,
+      padroesRepasse,
+    ] = await Promise.all([
       prisma.clinica.findMany({
         where: { ativo: true },
         select: { id: true, nome: true },
@@ -11825,6 +13066,7 @@ app.get("/financeiro/repasses", async (req, res) => {
           aprovadoPor: { select: { id: true, nome: true } },
           recusadoPor: { select: { id: true, nome: true } },
           pagoPor: { select: { id: true, nome: true } },
+          contaFinanceira: { select: { id: true, nome: true } },
           documentos: {
             where: { ativo: true },
             select: {
@@ -11857,6 +13099,14 @@ app.get("/financeiro/repasses", async (req, res) => {
         take: porPagina,
       }),
       prisma.repasse.count({ where: whereRepasses }),
+      prisma.contaFinanceira.findMany({
+        where: { organizacaoId, ativo: true },
+        orderBy: { nome: "asc" },
+      }),
+      prisma.contaPadraoRepasse.findMany({
+        where: { organizacaoId, contaFinanceira: { ativo: true } },
+        include: { contaFinanceira: true },
+      }),
     ]);
 
     const disponiveis = guiasConfirmadas.flatMap((guia) => {
@@ -11901,6 +13151,10 @@ app.get("/financeiro/repasses", async (req, res) => {
       dataPagamentoEfetivo: repasse.dataPagamentoEfetivo,
       formaPagamento: repasse.formaPagamento,
       formaPagamentoLabel: rotuloFormaPagamentoRepasse(repasse.formaPagamento),
+      contaFinanceiraId: repasse.contaFinanceiraId,
+      contaFinanceiraNome:
+        repasse.contaFinanceiraNome || repasse.contaFinanceira?.nome || null,
+      contaAlteradaManualmente: repasse.contaAlteradaManualmente,
       observacaoPagamento: repasse.observacaoPagamento,
       motivoRecusa: repasse.motivoRecusa,
       observacoes: repasse.observacoes,
@@ -11943,6 +13197,12 @@ app.get("/financeiro/repasses", async (req, res) => {
 
     return res.json({
       clinicas,
+      contasFinanceiras: contasFinanceiras.map(serializarContaFinanceira),
+      contasPadraoRepasse: padroesRepasse.map((item: any) => ({
+        forma: item.forma,
+        contaFinanceiraId: item.contaFinanceiraId,
+        contaFinanceiraNome: item.contaFinanceira?.nome || null,
+      })),
       limitesDataPagamento: {
         minimo: adicionarDiasIso(dataIsoSaoPaulo(), 1),
         maximo: adicionarDiasIso(dataIsoSaoPaulo(), 7),
@@ -12339,8 +13599,8 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
       }
 
       const formaPagamento = String(req.body?.formaPagamento || "").trim().toUpperCase();
-      const formasValidas = ["PIX", "TRANSFERENCIA", "BOLETO", "DINHEIRO", "OUTRO"];
-      if (!formasValidas.includes(formaPagamento)) {
+      const formasValidas = [...FORMAS_REPASSE_CONFIGURAVEIS];
+      if (!(formasValidas as readonly string[]).includes(formaPagamento)) {
         return res.status(400).json({ erro: "Informe a forma de pagamento do repasse." });
       }
 
@@ -12358,6 +13618,47 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
         return res.status(409).json({ erro: "O repasse precisa estar aprovado para registrar o pagamento." });
       }
 
+      const [contasAtivas, padrao] = await Promise.all([
+        prisma.contaFinanceira.findMany({
+          where: { organizacaoId, ativo: true },
+          select: { id: true, nome: true },
+        }),
+        prisma.contaPadraoRepasse.findUnique({
+          where: {
+            organizacaoId_forma: {
+              organizacaoId,
+              forma: formaPagamento as any,
+            },
+          },
+          include: { contaFinanceira: true },
+        }),
+      ]);
+
+      const contaRecebida = Number(req.body?.contaFinanceiraId);
+      const contaRecebidaId =
+        Number.isInteger(contaRecebida) && contaRecebida > 0
+          ? contaRecebida
+          : null;
+      const contaPadraoAtivaId =
+        padrao?.contaFinanceira?.ativo
+          ? padrao.contaFinanceiraId
+          : null;
+      const contaFinanceiraId = contaRecebidaId || contaPadraoAtivaId || null;
+      const contaSelecionada = contaFinanceiraId
+        ? contasAtivas.find((conta) => conta.id === contaFinanceiraId) || null
+        : null;
+
+      if (contaFinanceiraId && !contaSelecionada) {
+        return res.status(400).json({
+          erro: "A conta financeira selecionada é inválida ou está inativa.",
+        });
+      }
+      if (contasAtivas.length > 0 && !contaFinanceiraId) {
+        return res.status(400).json({
+          erro: "Selecione a conta financeira de onde sairá o pagamento do repasse.",
+        });
+      }
+
       const arquivos = arquivosRecebidosRepasse(req);
       const agora = new Date();
 
@@ -12365,6 +13666,12 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
         const dadosAtualizacao: any = {
           dataPagamentoEfetivo: dataPagamento.data,
           formaPagamento: formaPagamento as any,
+          contaFinanceiraId,
+          contaFinanceiraNome: contaSelecionada?.nome || null,
+          contaPadraoIdSnapshot: contaPadraoAtivaId,
+          contaAlteradaManualmente:
+            Boolean(contaPadraoAtivaId) &&
+            contaFinanceiraId !== contaPadraoAtivaId,
           observacaoPagamento,
         };
 
@@ -12378,6 +13685,28 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
           where: { id },
           data: dadosAtualizacao,
         });
+
+        if (contaFinanceiraId) {
+          await tx.movimentacaoConta.upsert({
+            where: { repasseId: id },
+            create: {
+              organizacaoId,
+              contaFinanceiraId,
+              tipo: "SAIDA",
+              origem: "REPASSE",
+              valor: Number(repasse.valorTotal),
+              descricao: `Repasse ${repasse.codigoPublico || `#${repasse.id}`}`,
+              dataMovimentacao: dataPagamento.data,
+              repasseId: id,
+            },
+            update: {
+              contaFinanceiraId,
+              valor: Number(repasse.valorTotal),
+              descricao: `Repasse ${repasse.codigoPublico || `#${repasse.id}`}`,
+              dataMovimentacao: dataPagamento.data,
+            },
+          });
+        }
 
         if (arquivos.comprovante) {
           await salvarDocumentoRepasse(
@@ -12412,6 +13741,7 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
     }
   });
 });
+
 
 app.post("/financeiro/repasses/:id/documentos", (req, res) => {
   uploadDocumentosRepasse(req, res, async (erro: unknown) => {

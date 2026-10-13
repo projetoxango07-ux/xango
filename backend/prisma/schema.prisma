@@ -61,6 +61,7 @@ enum FormaPagamento {
   DINHEIRO
   CARTAO_CREDITO
   CARTAO_DEBITO
+  BOLETO
   TRANSFERENCIA
   OUTRO
 }
@@ -91,6 +92,25 @@ enum FormaPagamentoRepasse {
   BOLETO
   DINHEIRO
   OUTRO
+}
+
+enum TipoContaFinanceira {
+  BANCO
+  CARTEIRA_DIGITAL
+  CAIXA
+  OUTRO
+}
+
+enum TipoMovimentacaoConta {
+  ENTRADA
+  SAIDA
+}
+
+enum OrigemMovimentacaoConta {
+  PAGAMENTO
+  ESTORNO
+  REPASSE
+  AJUSTE
 }
 
 enum TipoDocumentoRepasse {
@@ -168,7 +188,7 @@ model Organizacao {
 
   // Parâmetros operacionais/financeiros da organização.
   // Os módulos financeiros consomem estas preferências sem alterar documentos já emitidos.
-  formasPagamentoHabilitadas FormaPagamento[] @default([PIX, DINHEIRO, CARTAO_CREDITO, CARTAO_DEBITO, TRANSFERENCIA, OUTRO])
+  formasPagamentoHabilitadas FormaPagamento[] @default([PIX, DINHEIRO, CARTAO_CREDITO, CARTAO_DEBITO, BOLETO, TRANSFERENCIA, OUTRO])
   textoPadraoRecibo          String?          @db.Text
   textoPadraoEstorno         String?          @db.Text
 
@@ -194,6 +214,11 @@ model Organizacao {
   faturasSistema FaturaSistema[]
   repasses       Repasse[]
   relatosProblema RelatoProblema[]
+  operadorasPagamento OperadoraPagamento[]
+  contasFinanceiras      ContaFinanceira[]
+  formasRecebimento      FormaRecebimento[]
+  movimentacoesConta     MovimentacaoConta[]
+  contasPadraoRepasse    ContaPadraoRepasse[]
 
   criadoEm      DateTime  @default(now())
   atualizadoEm  DateTime  @updatedAt
@@ -841,20 +866,211 @@ model ItemGuia {
   atualizadoEm        DateTime          @updatedAt
 }
 
-model Pagamento {
+model OperadoraPagamento {
   id              Int              @id @default(autoincrement())
 
-  guiaId          Int
-  guia            Guia             @relation(fields: [guiaId], references: [id])
+  organizacaoId   Int
+  organizacao     Organizacao      @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
 
-  valor           Decimal          @db.Decimal(10, 2)
-  forma           FormaPagamento
-  observacao      String?
+  nome            String
+  ativo           Boolean          @default(true)
 
-  recibos         ReciboPagamento[]
-  estornos        Estorno[]
+  // Mantido para compatibilidade com a primeira versão das tarifas.
+  tarifas         TarifaPagamento[]
+  formasRecebimento FormaRecebimento[]
+  pagamentos      Pagamento[]
 
   criadoEm        DateTime         @default(now())
+  atualizadoEm    DateTime         @updatedAt
+
+  @@unique([organizacaoId, nome])
+  @@index([organizacaoId, ativo])
+}
+
+model TarifaPagamento {
+  id              Int               @id @default(autoincrement())
+
+  operadoraId     Int
+  operadora       OperadoraPagamento @relation(fields: [operadoraId], references: [id], onDelete: Cascade)
+
+  forma           FormaPagamento
+  parcelas        Int               @default(1)
+  percentual      Decimal           @default(0) @db.Decimal(7, 4)
+  fixa            Decimal           @default(0) @db.Decimal(10, 2)
+  ativo           Boolean           @default(true)
+
+  criadoEm        DateTime          @default(now())
+  atualizadoEm    DateTime          @updatedAt
+
+  @@unique([operadoraId, forma, parcelas])
+  @@index([forma, parcelas])
+}
+
+model ContaFinanceira {
+  id              Int                 @id @default(autoincrement())
+
+  organizacaoId   Int
+  organizacao     Organizacao         @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
+
+  nome            String
+  tipo            TipoContaFinanceira @default(BANCO)
+  saldoInicial    Decimal             @default(0) @db.Decimal(12, 2)
+  saldoInicialEm  DateTime?
+  ativo           Boolean             @default(true)
+
+  formasPadrao    FormaRecebimento[]  @relation("FormaRecebimentoContaPadrao")
+  pagamentos      Pagamento[]         @relation("PagamentoContaFinanceira")
+  repasses        Repasse[]           @relation("RepasseContaFinanceira")
+  movimentacoes   MovimentacaoConta[]
+  padroesRepasse  ContaPadraoRepasse[]
+
+  criadoEm        DateTime            @default(now())
+  atualizadoEm    DateTime            @updatedAt
+
+  @@unique([organizacaoId, nome])
+  @@index([organizacaoId, ativo])
+}
+
+model FormaRecebimento {
+  id              Int                 @id @default(autoincrement())
+
+  organizacaoId   Int
+  organizacao     Organizacao         @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
+
+  nome            String
+  forma           FormaPagamento
+
+  operadoraId     Int?
+  operadora       OperadoraPagamento? @relation(fields: [operadoraId], references: [id], onDelete: SetNull)
+
+  contaPadraoId   Int?
+  contaPadrao     ContaFinanceira?     @relation("FormaRecebimentoContaPadrao", fields: [contaPadraoId], references: [id], onDelete: SetNull)
+
+  ativo           Boolean             @default(true)
+
+  tarifas         TarifaFormaRecebimento[]
+  pagamentos      Pagamento[]
+
+  criadoEm        DateTime            @default(now())
+  atualizadoEm    DateTime            @updatedAt
+
+  @@unique([organizacaoId, nome])
+  @@index([organizacaoId, forma, ativo])
+  @@index([operadoraId])
+  @@index([contaPadraoId])
+}
+
+model TarifaFormaRecebimento {
+  id                    Int              @id @default(autoincrement())
+
+  formaRecebimentoId    Int
+  formaRecebimento      FormaRecebimento @relation(fields: [formaRecebimentoId], references: [id], onDelete: Cascade)
+
+  parcelas              Int              @default(1)
+  percentual            Decimal          @default(0) @db.Decimal(7, 4)
+  fixa                  Decimal          @default(0) @db.Decimal(10, 2)
+  ativo                 Boolean          @default(true)
+
+  criadoEm              DateTime         @default(now())
+  atualizadoEm          DateTime         @updatedAt
+
+  @@unique([formaRecebimentoId, parcelas])
+  @@index([parcelas])
+}
+
+model ContaPadraoRepasse {
+  id                  Int                    @id @default(autoincrement())
+
+  organizacaoId       Int
+  organizacao         Organizacao            @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
+
+  forma               FormaPagamentoRepasse
+  contaFinanceiraId   Int
+  contaFinanceira     ContaFinanceira        @relation(fields: [contaFinanceiraId], references: [id], onDelete: Cascade)
+
+  criadoEm            DateTime               @default(now())
+  atualizadoEm        DateTime               @updatedAt
+
+  @@unique([organizacaoId, forma])
+  @@index([contaFinanceiraId])
+}
+
+model MovimentacaoConta {
+  id                  Int                      @id @default(autoincrement())
+
+  organizacaoId       Int
+  organizacao         Organizacao              @relation(fields: [organizacaoId], references: [id], onDelete: Cascade)
+
+  contaFinanceiraId   Int
+  contaFinanceira     ContaFinanceira          @relation(fields: [contaFinanceiraId], references: [id], onDelete: Restrict)
+
+  tipo                TipoMovimentacaoConta
+  origem              OrigemMovimentacaoConta
+  valor               Decimal                  @db.Decimal(12, 2)
+  descricao           String?
+  dataMovimentacao    DateTime                  @default(now())
+
+  pagamentoId         Int?                     @unique
+  pagamento           Pagamento?               @relation(fields: [pagamentoId], references: [id], onDelete: Cascade)
+
+  estornoId           Int?                     @unique
+  estorno             Estorno?                 @relation(fields: [estornoId], references: [id], onDelete: Cascade)
+
+  repasseId           Int?                     @unique
+  repasse             Repasse?                 @relation(fields: [repasseId], references: [id], onDelete: Cascade)
+
+  criadoEm            DateTime                 @default(now())
+
+  @@index([organizacaoId, dataMovimentacao])
+  @@index([contaFinanceiraId, dataMovimentacao])
+  @@index([tipo, origem])
+}
+
+model Pagamento {
+  id                      Int                 @id @default(autoincrement())
+
+  guiaId                  Int
+  guia                    Guia                @relation(fields: [guiaId], references: [id])
+
+  operadoraId             Int?
+  operadora               OperadoraPagamento? @relation(fields: [operadoraId], references: [id])
+
+  formaRecebimentoId      Int?
+  formaRecebimento        FormaRecebimento?   @relation(fields: [formaRecebimentoId], references: [id], onDelete: SetNull)
+
+  contaFinanceiraId       Int?
+  contaFinanceira         ContaFinanceira?     @relation("PagamentoContaFinanceira", fields: [contaFinanceiraId], references: [id], onDelete: SetNull)
+
+  // Snapshot de roteamento e identificação no momento do recebimento.
+  formaRecebimentoNome    String?
+  operadoraNome           String?
+  contaFinanceiraNome     String?
+  contaPadraoIdSnapshot   Int?
+  contaAlteradaManualmente Boolean            @default(false)
+
+  valor                   Decimal             @db.Decimal(10, 2)
+  forma                   FormaPagamento
+  parcelas                Int                 @default(1)
+
+  // Snapshot da tarifa aplicada no momento do pagamento.
+  // Pagamentos legados permanecem nulos e são tratados como tarifa zero.
+  taxaPercentualAplicada  Decimal?            @db.Decimal(7, 4)
+  taxaFixaAplicada        Decimal?            @db.Decimal(10, 2)
+  valorTarifa             Decimal?            @db.Decimal(10, 2)
+  valorLiquido            Decimal?            @db.Decimal(10, 2)
+
+  observacao              String?
+
+  recibos                 ReciboPagamento[]
+  estornos                Estorno[]
+  movimentacaoConta       MovimentacaoConta?
+
+  criadoEm                DateTime            @default(now())
+
+  @@index([operadoraId])
+  @@index([formaRecebimentoId])
+  @@index([contaFinanceiraId])
+  @@index([forma, parcelas])
 }
 
 model Estorno {
@@ -879,6 +1095,8 @@ model Estorno {
   valor           Decimal          @db.Decimal(10, 2)
   forma           FormaPagamento
   motivo          String?
+
+  movimentacaoConta MovimentacaoConta?
 
   criadoEm        DateTime         @default(now())
 
@@ -1023,6 +1241,13 @@ model Repasse {
   pagoEm                   DateTime?
   dataPagamentoEfetivo     DateTime?
   formaPagamento           FormaPagamentoRepasse?
+
+  contaFinanceiraId        Int?
+  contaFinanceira          ContaFinanceira? @relation("RepasseContaFinanceira", fields: [contaFinanceiraId], references: [id], onDelete: SetNull)
+  contaFinanceiraNome      String?
+  contaPadraoIdSnapshot    Int?
+  contaAlteradaManualmente Boolean          @default(false)
+
   observacaoPagamento      String?         @db.Text
 
   motivoRecusa             String?
@@ -1030,6 +1255,7 @@ model Repasse {
 
   itens                    RepasseItem[]
   documentos               DocumentoRepasse[]
+  movimentacaoConta        MovimentacaoConta?
 
   criadoEm                 DateTime        @default(now())
   atualizadoEm             DateTime        @updatedAt
@@ -1037,6 +1263,7 @@ model Repasse {
   @@index([organizacaoId])
   @@index([clinicaId])
   @@index([status])
+  @@index([contaFinanceiraId])
   @@index([dataPagamentoSolicitada])
 }
 

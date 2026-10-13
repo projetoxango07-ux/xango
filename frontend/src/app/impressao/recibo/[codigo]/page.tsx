@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import QRCode from "react-qr-code";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333";
+const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+import QRCode from "react-qr-code";
 
 type ReciboApi = {
   id: number;
@@ -48,6 +48,7 @@ type ReciboApi = {
       id: number;
       valor: string | number;
       forma: string;
+      parcelas?: number | null;
       observacao: string | null;
       criadoEm: string;
     };
@@ -132,14 +133,22 @@ function moeda(valor: string | number) {
   });
 }
 
-function formaPagamentoLabel(forma: string) {
+function formaPagamentoLabel(
+  forma: string,
+  parcelas?: number | null
+) {
   switch (forma) {
     case "PIX":
       return "PIX";
     case "DINHEIRO":
       return "Dinheiro";
-    case "CARTAO_CREDITO":
-      return "Cartão de crédito";
+    case "CARTAO_CREDITO": {
+      const quantidadeParcelas = Math.max(
+        Number(parcelas) || 1,
+        1
+      );
+      return `Cartão de crédito • ${quantidadeParcelas}x`;
+    }
     case "CARTAO_DEBITO":
       return "Cartão de débito";
     case "TRANSFERENCIA":
@@ -178,7 +187,10 @@ export default function ReciboPagamentoPage() {
 
         const resposta = await fetch(
           `${API_URL}/recibos/${encodeURIComponent(codigo)}`,
-          { credentials: "include", cache: "no-store" }
+          {
+            credentials: "include",
+            cache: "no-store",
+          }
         );
 
         const dados = await resposta.json();
@@ -433,7 +445,10 @@ export default function ReciboPagamentoPage() {
                 >
                   <div className="flex justify-between gap-4">
                     <span>
-                      {formaPagamentoLabel(item.pagamento.forma)}
+                      {formaPagamentoLabel(
+                        item.pagamento.forma,
+                        item.pagamento.parcelas
+                      )}
                     </span>
 
                     <strong>{moeda(item.pagamento.valor)}</strong>

@@ -176,6 +176,12 @@ type DocumentoFinanceiroApi = {
       id: number;
       valor: string | number;
       forma: string;
+      parcelas?: number;
+      formaRecebimento?: string | null;
+      operadora?: string | null;
+      contaFinanceira?: string | null;
+      valorTarifa?: string | number | null;
+      valorLiquido?: string | number | null;
       criadoEm: string;
     }[];
   }[];
@@ -200,6 +206,137 @@ type DocumentoFinanceiroApi = {
   }[];
 };
 
+type TarifaFormaRecebimentoPreferencia = {
+  id: number;
+  parcelas: number;
+  percentual: number;
+  fixa: number;
+  ativo: boolean;
+};
+
+type ContaFinanceiraPreferencia = {
+  id: number;
+  nome: string;
+  tipo: string;
+  tipoLabel?: string;
+  ativo: boolean;
+  saldoInicial?: number;
+};
+
+type FormaRecebimentoPreferencia = {
+  id: number;
+  nome: string;
+  forma: string;
+  formaLabel: string;
+  ativo: boolean;
+  operadora: {
+    id: number;
+    nome: string;
+    ativo: boolean;
+  } | null;
+  contaPadrao: ContaFinanceiraPreferencia | null;
+  tarifas: TarifaFormaRecebimentoPreferencia[];
+};
+
+type PreferenciasFinanceirasApi = {
+  formasPagamentoHabilitadas: string[];
+  formasPagamento: Array<{ codigo: string; label: string }>;
+  maxParcelasCredito: number;
+  contasFinanceiras: ContaFinanceiraPreferencia[];
+  formasRecebimento: FormaRecebimentoPreferencia[];
+  contasPadraoRepasse?: Array<{
+    forma: string;
+    contaFinanceiraId: number;
+    contaFinanceiraNome: string | null;
+  }>;
+};
+
+type PartePagamentoMisto = {
+  id: string;
+  formaRecebimentoId: number;
+  formaRecebimentoNome: string;
+  forma: string;
+  formaLabel: string;
+  valor: number;
+  parcelas: number;
+  operadoraId: number | null;
+  operadoraNome: string | null;
+  contaFinanceiraId: number | null;
+  contaFinanceiraNome: string | null;
+  contaPadraoId: number | null;
+  contaAlteradaManualmente: boolean;
+  taxaPercentual: number;
+  taxaFixa: number;
+  valorTarifa: number;
+  valorLiquido: number;
+};
+
+type PagamentoEstornavelApi = {
+  id: number;
+  valor: number;
+  totalEstornado: number;
+  disponivel: number;
+  forma: string;
+  formaLabel: string;
+  parcelas: number;
+  formaRecebimento: string | null;
+  operadora: string | null;
+  contaFinanceira: string | null;
+  criadoEm: string;
+};
+
+const PREFERENCIAS_FINANCEIRAS_PADRAO: PreferenciasFinanceirasApi = {
+  formasPagamentoHabilitadas: [
+    "PIX",
+    "DINHEIRO",
+    "CARTAO_CREDITO",
+    "CARTAO_DEBITO",
+    "BOLETO",
+    "TRANSFERENCIA",
+    "OUTRO",
+  ],
+  formasPagamento: [
+    { codigo: "PIX", label: "PIX" },
+    { codigo: "DINHEIRO", label: "Dinheiro" },
+    { codigo: "CARTAO_CREDITO", label: "Cartão de crédito" },
+    { codigo: "CARTAO_DEBITO", label: "Cartão de débito" },
+    { codigo: "BOLETO", label: "Boleto" },
+    { codigo: "TRANSFERENCIA", label: "Transferência" },
+    { codigo: "OUTRO", label: "Outro" },
+  ],
+  maxParcelasCredito: 12,
+  contasFinanceiras: [],
+  formasRecebimento: [],
+};
+
+function arredondarCentavos(valor: number) {
+  return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
+}
+
+function calcularPreviaTarifaPagamento(
+  forma: FormaRecebimentoPreferencia | null,
+  parcelas: number,
+  valor: number
+) {
+  const parcelasNormalizadas =
+    forma?.forma === "CARTAO_CREDITO" ? parcelas : 1;
+  const tarifa = forma?.tarifas.find(
+    (item) => item.ativo && item.parcelas === parcelasNormalizadas
+  );
+  const percentual = Number(tarifa?.percentual || 0);
+  const fixa = Number(tarifa?.fixa || 0);
+  const valorTarifa = arredondarCentavos(
+    valor * (percentual / 100) + fixa
+  );
+
+  return {
+    percentual,
+    fixa,
+    valorTarifa,
+    valorLiquido: arredondarCentavos(Math.max(valor - valorTarifa, 0)),
+  };
+}
+
 function formaPagamentoLabel(forma: string) {
   switch (forma) {
     case "PIX":
@@ -210,6 +347,8 @@ function formaPagamentoLabel(forma: string) {
       return "Cartão de crédito";
     case "CARTAO_DEBITO":
       return "Cartão de débito";
+    case "BOLETO":
+      return "Boleto";
     case "TRANSFERENCIA":
       return "Transferência";
     default:
@@ -340,29 +479,103 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [guiaEstornoAberta, setGuiaEstornoAberta] = useState<string | null>(
   null
   );
-  const [formaEstorno, setFormaEstorno] = useState("");
+  const [pagamentoEstornoId, setPagamentoEstornoId] = useState("");
+  const [pagamentosEstornaveis, setPagamentosEstornaveis] = useState<PagamentoEstornavelApi[]>([]);
+  const [carregandoPagamentosEstornaveis, setCarregandoPagamentosEstornaveis] = useState(false);
+  const [erroPagamentosEstornaveis, setErroPagamentosEstornaveis] = useState("");
   const [valorEstornadoInformado, setValorEstornadoInformado] = useState("");
   const [observacaoEstorno, setObservacaoEstorno] = useState("");
 
   const [estornosGuias, setEstornosGuias] = useState<Record<string, number>>({});
 
-  const [formaPagamento, setFormaPagamento] = useState("");
-
+  const [formaRecebimentoPagamentoId, setFormaRecebimentoPagamentoId] = useState("");
+  const [contaFinanceiraPagamentoId, setContaFinanceiraPagamentoId] = useState("");
   const [valorRecebido, setValorRecebido] = useState("");
+  const [parcelasPagamento, setParcelasPagamento] = useState(1);
+  const [pagamentosMistos, setPagamentosMistos] = useState<PartePagamentoMisto[]>([]);
+  const [preferenciasFinanceiras, setPreferenciasFinanceiras] =
+    useState<PreferenciasFinanceirasApi>(PREFERENCIAS_FINANCEIRAS_PADRAO);
 
   const [pagamentosGuias, setPagamentosGuias] = useState<
   Record<string, number>
   >({});
+
+  useEffect(() => {
+    if (!guiaEstornoAberta) {
+      setPagamentoEstornoId("");
+      setPagamentosEstornaveis([]);
+      setErroPagamentosEstornaveis("");
+      return;
+    }
+
+    const guiaId = guiaIds[guiaEstornoAberta];
+    setPagamentoEstornoId("");
+    setValorEstornadoInformado("");
+    setObservacaoEstorno("");
+    setPagamentosEstornaveis([]);
+    setErroPagamentosEstornaveis("");
+
+    if (!guiaId) {
+      setErroPagamentosEstornaveis(
+        "Salve a guia antes de registrar o estorno."
+      );
+      return;
+    }
+
+    const controller = new AbortController();
+
+    async function carregarPagamentosEstornaveis() {
+      try {
+        setCarregandoPagamentosEstornaveis(true);
+        const resposta = await fetch(
+          `${API_URL}/guias/${guiaId}/pagamentos-estornaveis`,
+          { signal: controller.signal, cache: "no-store" }
+        );
+        const dados = await resposta.json();
+
+        if (!resposta.ok) {
+          throw new Error(
+            dados.erro ||
+              "Não foi possível carregar os recebimentos disponíveis para estorno."
+          );
+        }
+
+        setPagamentosEstornaveis(
+          Array.isArray(dados.pagamentos) ? dados.pagamentos : []
+        );
+      } catch (erro) {
+        if (erro instanceof DOMException && erro.name === "AbortError") {
+          return;
+        }
+        setErroPagamentosEstornaveis(
+          erro instanceof Error
+            ? erro.message
+            : "Não foi possível carregar os recebimentos disponíveis para estorno."
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setCarregandoPagamentosEstornaveis(false);
+        }
+      }
+    }
+
+    void carregarPagamentosEstornaveis();
+    return () => controller.abort();
+  }, [guiaEstornoAberta, guiaIds]);
+
   useEffect(() => {
     async function carregarDados() {
       try {
         setCarregandoDados(true);
         setErroDados("");
 
-        const [resProcedimentos, resClinicas] =
+        const [resProcedimentos, resClinicas, resPreferencias] =
           await Promise.all([
             fetch(`${API_URL}/procedimentos`),
             fetch(`${API_URL}/clinicas`),
+            fetch(`${API_URL}/preferencias/financeiro`, {
+              cache: "no-store",
+            }).catch(() => null),
           ]);
 
         if (!resProcedimentos.ok || !resClinicas.ok) {
@@ -371,6 +584,38 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
 
         const procedimentosApi: ProcedimentoApi[] = await resProcedimentos.json();
         const clinicasApi: ClinicaApi[] = await resClinicas.json();
+
+        if (resPreferencias?.ok) {
+          const preferenciasApi: PreferenciasFinanceirasApi =
+            await resPreferencias.json();
+          setPreferenciasFinanceiras({
+            formasPagamentoHabilitadas: Array.isArray(
+              preferenciasApi.formasPagamentoHabilitadas
+            )
+              ? preferenciasApi.formasPagamentoHabilitadas
+              : PREFERENCIAS_FINANCEIRAS_PADRAO.formasPagamentoHabilitadas,
+            formasPagamento: Array.isArray(preferenciasApi.formasPagamento)
+              ? preferenciasApi.formasPagamento
+              : PREFERENCIAS_FINANCEIRAS_PADRAO.formasPagamento,
+            maxParcelasCredito:
+              Number(preferenciasApi.maxParcelasCredito) || 12,
+            contasFinanceiras: Array.isArray(
+              preferenciasApi.contasFinanceiras
+            )
+              ? preferenciasApi.contasFinanceiras
+              : [],
+            formasRecebimento: Array.isArray(
+              preferenciasApi.formasRecebimento
+            )
+              ? preferenciasApi.formasRecebimento
+              : [],
+            contasPadraoRepasse: Array.isArray(
+              preferenciasApi.contasPadraoRepasse
+            )
+              ? preferenciasApi.contasPadraoRepasse
+              : [],
+          });
+        }
 
         const procedimentosAdaptados: Procedimento[] =
           procedimentosApi.map((procedimento) => {
@@ -1177,7 +1422,15 @@ const contextoAprendizAtendimento = (() => {
     const guia = guias.find((item) => item.chave === guiaPagamentoAberta);
     const detalhe = guia?.clinicaNome || "guia selecionada";
 
-    if (!formaPagamento) {
+    if (pagamentosMistos.length > 0) {
+      return criar(
+        "pagamento-confirmar",
+        '[data-aprendiz="atendimento-pagamento-confirmar"]',
+        detalhe
+      );
+    }
+
+    if (!formaRecebimentoPagamentoId) {
       return criar(
         "pagamento-forma",
         '[data-aprendiz="atendimento-pagamento-forma"]',
@@ -1206,8 +1459,8 @@ const contextoAprendizAtendimento = (() => {
     }
 
     return criar(
-      "pagamento-confirmar",
-      '[data-aprendiz="atendimento-pagamento-confirmar"]',
+      "pagamento-adicionar",
+      '[data-aprendiz="atendimento-pagamento-adicionar"]',
       detalhe
     );
   }
@@ -1216,9 +1469,21 @@ const contextoAprendizAtendimento = (() => {
     const guia = guias.find((item) => item.chave === guiaEstornoAberta);
     const detalhe = guia?.clinicaNome || "guia selecionada";
 
-    if (!formaEstorno) {
+    if (!pagamentoEstornoId) {
       return criar(
-        "estorno-forma",
+        "estorno-origem",
+        '[data-aprendiz="atendimento-estorno-forma"]',
+        detalhe
+      );
+    }
+
+    const pagamentoSelecionado = pagamentosEstornaveis.find(
+      (item) => item.id === Number(pagamentoEstornoId)
+    );
+
+    if (!pagamentoSelecionado) {
+      return criar(
+        "estorno-origem-invalida",
         '[data-aprendiz="atendimento-estorno-forma"]',
         detalhe
       );
@@ -1233,15 +1498,12 @@ const contextoAprendizAtendimento = (() => {
       );
     }
 
-    if (guia) {
-      const resumo = resumoFinanceiroDaGuia(guia);
-      if (valor > resumo.pagoLiquido + 0.001) {
-        return criar(
-          "estorno-valor-invalido",
-          '[data-aprendiz="atendimento-estorno-valor"]',
-          detalhe
-        );
-      }
+    if (valor > pagamentoSelecionado.disponivel + 0.001) {
+      return criar(
+        "estorno-valor-invalido",
+        '[data-aprendiz="atendimento-estorno-valor"]',
+        detalhe
+      );
     }
 
     return criar(
@@ -1903,8 +2165,7 @@ const contextoAprendizAtendimento = (() => {
   async function registrarPagamentoImediato(
     guiaChave: string,
     guiaId: number,
-    valor: number,
-    forma: string
+    pagamentos: PartePagamentoMisto[]
   ) {
     try {
       setProcessandoPagamento(true);
@@ -1917,8 +2178,12 @@ const contextoAprendizAtendimento = (() => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            valor,
-            forma,
+            pagamentos: pagamentos.map((pagamento) => ({
+              valor: pagamento.valor,
+              formaRecebimentoId: pagamento.formaRecebimentoId,
+              contaFinanceiraId: pagamento.contaFinanceiraId,
+              parcelas: pagamento.parcelas,
+            })),
           }),
         }
       );
@@ -1972,7 +2237,7 @@ const contextoAprendizAtendimento = (() => {
     guiaChave: string,
     guiaId: number,
     valor: number,
-    forma: string,
+    pagamentoId: number,
     motivo: string
   ) {
     try {
@@ -1987,7 +2252,7 @@ const contextoAprendizAtendimento = (() => {
           },
           body: JSON.stringify({
             valor,
-            forma,
+            pagamentoId,
             motivo,
           }),
         }
@@ -3222,7 +3487,7 @@ const contextoAprendizAtendimento = (() => {
                   data-aprendiz="atendimento-guia-estorno"
                   onClick={() => {
                     setGuiaEstornoAberta(guia.chave);
-                    setFormaEstorno("");
+                    setPagamentoEstornoId("");
                     setValorEstornadoInformado("");
                     setObservacaoEstorno("");
                   }}
@@ -3313,8 +3578,11 @@ const contextoAprendizAtendimento = (() => {
                     }
                     onClick={() => {
                       setGuiaPagamentoAberta(guia.chave);
-                      setFormaPagamento("");
+                      setFormaRecebimentoPagamentoId("");
+                      setContaFinanceiraPagamentoId("");
                       setValorRecebido("");
+                      setParcelasPagamento(1);
+                      setPagamentosMistos([]);
                     }}
                     className="rounded-md border border-xango-primary px-4 py-2 text-xs font-semibold text-xango-primary transition enabled:hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -3330,7 +3598,7 @@ const contextoAprendizAtendimento = (() => {
                       disabled={!guiaIds[guia.chave]}
                       onClick={() => {
                         setGuiaEstornoAberta(guia.chave);
-                        setFormaEstorno("");
+                        setPagamentoEstornoId("");
                         setValorEstornadoInformado("");
                         setObservacaoEstorno("");
                       }}
@@ -3876,7 +4144,7 @@ const contextoAprendizAtendimento = (() => {
 
     <aside
       data-aprendiz="atendimento-pagamento-modal"
-      className="fixed right-0 top-0 z-50 h-screen w-full max-w-md overflow-y-auto bg-white p-6 shadow-2xl"
+      className="fixed right-0 top-0 z-50 h-screen w-full max-w-lg overflow-y-auto bg-white p-6 shadow-2xl"
     >
       {(() => {
         const guia = guias.find(
@@ -3935,6 +4203,71 @@ const contextoAprendizAtendimento = (() => {
           0
         );
 
+        const totalMisto = pagamentosMistos.reduce(
+          (total, item) => total + item.valor,
+          0
+        );
+        const totalTarifasMisto = pagamentosMistos.reduce(
+          (total, item) => total + item.valorTarifa,
+          0
+        );
+        const totalLiquidoMisto = pagamentosMistos.reduce(
+          (total, item) => total + item.valorLiquido,
+          0
+        );
+        const saldoDepoisDoMisto = Math.max(
+          saldo - totalMisto,
+          0
+        );
+
+        const formasRecebimentoAtivas =
+          preferenciasFinanceiras.formasRecebimento.filter(
+            (item) =>
+              item.ativo &&
+              preferenciasFinanceiras.formasPagamentoHabilitadas.includes(
+                item.forma
+              )
+          );
+        const contasAtivas = preferenciasFinanceiras.contasFinanceiras.filter(
+          (item) => item.ativo
+        );
+        const formaRecebimentoIdNumero = Number(
+          formaRecebimentoPagamentoId
+        );
+        const formaSelecionada =
+          formasRecebimentoAtivas.find(
+            (item) => item.id === formaRecebimentoIdNumero
+          ) || null;
+        const formaPagamento = formaSelecionada?.forma || "";
+        const contaFinanceiraIdNumero = Number(
+          contaFinanceiraPagamentoId
+        );
+        const contaFinanceiraIdValida =
+          Number.isInteger(contaFinanceiraIdNumero) &&
+          contaFinanceiraIdNumero > 0
+            ? contaFinanceiraIdNumero
+            : null;
+        const contaSelecionada =
+          contasAtivas.find(
+            (item) => item.id === contaFinanceiraIdValida
+          ) || null;
+        const contaPadraoId =
+          formaSelecionada?.contaPadrao?.ativo
+            ? formaSelecionada.contaPadrao.id
+            : null;
+        const valorAtual = Number(valorRecebido) || 0;
+        const previa = calcularPreviaTarifaPagamento(
+          formaSelecionada,
+          parcelasPagamento,
+          valorAtual
+        );
+
+        function limparCamposParte() {
+          setFormaRecebimentoPagamentoId("");
+          setContaFinanceiraPagamentoId("");
+          setValorRecebido("");
+          setParcelasPagamento(1);
+        }
 
         return (
           <>
@@ -3976,7 +4309,7 @@ const contextoAprendizAtendimento = (() => {
                 </div>
 
                 <div className="mt-2 flex justify-between text-sm">
-                  <span className="text-xango-muted">Pago Liquido</span>
+                  <span className="text-xango-muted">Já recebido</span>
                   <span className="font-semibold text-emerald-700">
                     {pagoLiquido.toLocaleString("pt-BR", {
                       style: "currency",
@@ -3987,11 +4320,11 @@ const contextoAprendizAtendimento = (() => {
 
                 <div className="mt-3 flex justify-between border-t border-xango-border pt-3">
                   <span className="text-sm font-semibold text-xango-text">
-                    Saldo
+                    Saldo disponível
                   </span>
 
                   <span className="text-lg font-bold text-xango-primary">
-                    {saldo.toLocaleString("pt-BR", {
+                    {saldoDepoisDoMisto.toLocaleString("pt-BR", {
                       style: "currency",
                       currency: "BRL",
                     })}
@@ -3999,48 +4332,369 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               </div>
 
-              <div data-aprendiz="atendimento-pagamento-forma">
-                <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
-                  Forma de pagamento
-                </label>
+              {pagamentosMistos.length > 0 && (
+                <div className="rounded-lg border border-xango-border">
+                  <div className="border-b border-xango-border px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                      Composição do pagamento
+                    </p>
+                  </div>
+                  <div className="divide-y divide-xango-border">
+                    {pagamentosMistos.map((item) => (
+                      <div key={item.id} className="p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-semibold text-xango-text">
+                              {item.formaRecebimentoNome}
+                              {item.forma === "CARTAO_CREDITO"
+                                ? ` • ${item.parcelas}x`
+                                : ""}
+                            </p>
+                            <p className="mt-1 text-xs text-xango-muted">
+                              {[
+                                item.formaLabel,
+                                item.operadoraNome,
+                                item.contaFinanceiraNome
+                                  ? `Conta: ${item.contaFinanceiraNome}`
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" • ")}
+                            </p>
+                            {item.contaAlteradaManualmente && (
+                              <p className="mt-1 text-xs font-semibold text-amber-700">
+                                Conta padrão alterada manualmente
+                              </p>
+                            )}
+                            <p className="mt-1 text-xs text-xango-muted">
+                              Tarifa {item.taxaPercentual.toLocaleString("pt-BR")}%
+                              {item.taxaFixa > 0
+                                ? ` + ${item.taxaFixa.toLocaleString("pt-BR", {
+                                    style: "currency",
+                                    currency: "BRL",
+                                  })}`
+                                : ""}
+                              {" • "}
+                              custo {item.valorTarifa.toLocaleString("pt-BR", {
+                                style: "currency",
+                                currency: "BRL",
+                              })}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-bold text-xango-text">
+                              {item.valor.toLocaleString("pt-BR", {
+                                style: "currency",
+                                currency: "BRL",
+                              })}
+                            </p>
+                            <p className="mt-1 text-xs font-semibold text-emerald-700">
+                              líquido {item.valorLiquido.toLocaleString("pt-BR", {
+                                style: "currency",
+                                currency: "BRL",
+                              })}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPagamentosMistos((atuais) =>
+                                  atuais.filter((parte) => parte.id !== item.id)
+                                )
+                              }
+                              className="mt-2 text-xs font-semibold text-red-600 hover:underline"
+                            >
+                              Remover
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 border-t border-xango-border bg-slate-50 p-4 text-xs">
+                    <div>
+                      <p className="text-xango-muted">Bruto</p>
+                      <p className="mt-1 font-bold text-xango-text">
+                        {totalMisto.toLocaleString("pt-BR", {
+                          style: "currency",
+                          currency: "BRL",
+                        })}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xango-muted">Tarifas</p>
+                      <p className="mt-1 font-bold text-amber-700">
+                        {totalTarifasMisto.toLocaleString("pt-BR", {
+                          style: "currency",
+                          currency: "BRL",
+                        })}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xango-muted">Líquido</p>
+                      <p className="mt-1 font-bold text-emerald-700">
+                        {totalLiquidoMisto.toLocaleString("pt-BR", {
+                          style: "currency",
+                          currency: "BRL",
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
-                <select
-                  value={formaPagamento}
-                  onChange={(event) => setFormaPagamento(event.target.value)}
-                  className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm outline-none focus:border-xango-primary"
-                >
-                  <option value="">Selecione</option>
-                  <option value="pix">PIX</option>
-                  <option value="dinheiro">Dinheiro</option>
-                  <option value="credito">Cartão de crédito</option>
-                  <option value="debito">Cartão de débito</option>
-                </select>
-              </div>
+              {saldoDepoisDoMisto > 0.009 && (
+                <div className="space-y-4 rounded-lg border border-xango-border p-4">
+                  <div data-aprendiz="atendimento-pagamento-forma">
+                    <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                      Forma de recebimento
+                    </label>
 
-              <div data-aprendiz="atendimento-pagamento-valor">
-                <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
-                  Valor recebido
-                </label>
+                    <select
+                      value={formaRecebimentoPagamentoId}
+                      onChange={(event) => {
+                        const novoId = event.target.value;
+                        setFormaRecebimentoPagamentoId(novoId);
+                        setParcelasPagamento(1);
 
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={valorRecebido}
-                  onChange={(event) => setValorRecebido(event.target.value)}
-                  placeholder="0,00"
-                  className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
-                />
-              </div>
+                        const selecionada =
+                          formasRecebimentoAtivas.find(
+                            (item) => item.id === Number(novoId)
+                          ) || null;
+
+                        setContaFinanceiraPagamentoId(
+                          selecionada?.contaPadrao?.ativo &&
+                          selecionada.contaPadrao.id
+                            ? String(selecionada.contaPadrao.id)
+                            : ""
+                        );
+                      }}
+                      className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm outline-none focus:border-xango-primary"
+                    >
+                      <option value="">Selecione</option>
+                      {formasRecebimentoAtivas.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.nome}
+                          {item.formaLabel && item.nome !== item.formaLabel
+                            ? ` • ${item.formaLabel}`
+                            : ""}
+                        </option>
+                      ))}
+                    </select>
+
+                    {formasRecebimentoAtivas.length === 0 && (
+                      <p className="mt-2 text-xs font-medium text-amber-700">
+                        Nenhuma forma de recebimento ativa foi configurada no Financeiro.
+                      </p>
+                    )}
+                  </div>
+
+                  {formaSelecionada && (
+                    <div className="rounded-md bg-slate-50 px-3 py-2 text-xs text-xango-muted">
+                      <span className="font-semibold text-xango-text">
+                        {formaSelecionada.formaLabel}
+                      </span>
+                      {formaSelecionada.operadora?.nome
+                        ? ` • ${formaSelecionada.operadora.nome}`
+                        : ""}
+                    </div>
+                  )}
+
+                  {contasAtivas.length > 0 ? (
+                    <div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                        Conta de entrada
+                      </label>
+                      <select
+                        value={contaFinanceiraPagamentoId}
+                        onChange={(event) =>
+                          setContaFinanceiraPagamentoId(event.target.value)
+                        }
+                        className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm outline-none focus:border-xango-primary"
+                      >
+                        <option value="">Selecione a conta</option>
+                        {contasAtivas.map((conta) => (
+                          <option key={conta.id} value={conta.id}>
+                            {conta.nome}
+                          </option>
+                        ))}
+                      </select>
+                      {formaSelecionada?.contaPadrao && (
+                        <p className="mt-2 text-xs text-xango-muted">
+                          Padrão sugerido: {formaSelecionada.contaPadrao.nome}. A conta pode ser alterada neste pagamento.
+                        </p>
+                      )}
+                      {formaSelecionada?.contaPadrao &&
+                        contaFinanceiraIdValida &&
+                        contaFinanceiraIdValida !== formaSelecionada.contaPadrao.id && (
+                          <p className="mt-1 text-xs font-semibold text-amber-700">
+                            Conta padrão alterada manualmente para este recebimento.
+                          </p>
+                        )}
+                    </div>
+                  ) : (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                      Nenhuma conta financeira ativa foi cadastrada. O pagamento poderá ser registrado, mas não entrará em um saldo de conta até que as contas sejam configuradas.
+                    </p>
+                  )}
+
+                  {formaPagamento === "CARTAO_CREDITO" && (
+                    <div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                        Parcelamento
+                      </label>
+                      <select
+                        value={parcelasPagamento}
+                        onChange={(event) =>
+                          setParcelasPagamento(Number(event.target.value))
+                        }
+                        className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm outline-none focus:border-xango-primary"
+                      >
+                        {Array.from(
+                          {
+                            length:
+                              preferenciasFinanceiras.maxParcelasCredito || 12,
+                          },
+                          (_, indice) => indice + 1
+                        ).map((parcelas) => (
+                          <option key={parcelas} value={parcelas}>
+                            {parcelas}x
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div data-aprendiz="atendimento-pagamento-valor">
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                        Valor desta parte
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setValorRecebido(
+                            arredondarCentavos(saldoDepoisDoMisto).toFixed(2)
+                          )
+                        }
+                        className="text-xs font-semibold text-xango-primary hover:underline"
+                      >
+                        Usar saldo restante
+                      </button>
+                    </div>
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={valorRecebido}
+                      onChange={(event) => setValorRecebido(event.target.value)}
+                      placeholder="0,00"
+                      className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
+                    />
+                  </div>
+
+                  {formaSelecionada && valorAtual > 0 && (
+                    <div className="rounded-md bg-slate-50 p-3 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-xango-muted">Tarifa estimada</span>
+                        <span className="font-semibold text-amber-700">
+                          {previa.valorTarifa.toLocaleString("pt-BR", {
+                            style: "currency",
+                            currency: "BRL",
+                          })}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex justify-between">
+                        <span className="text-xango-muted">Valor líquido na conta</span>
+                        <span className="font-semibold text-emerald-700">
+                          {previa.valorLiquido.toLocaleString("pt-BR", {
+                            style: "currency",
+                            currency: "BRL",
+                          })}
+                        </span>
+                      </div>
+                      {formaPagamento === "CARTAO_CREDITO" &&
+                        parcelasPagamento > 1 && (
+                          <div className="mt-1 flex justify-between">
+                            <span className="text-xango-muted">
+                              Valor aproximado por parcela
+                            </span>
+                            <span className="font-semibold text-xango-text">
+                              {(valorAtual / parcelasPagamento).toLocaleString(
+                                "pt-BR",
+                                {
+                                  style: "currency",
+                                  currency: "BRL",
+                                }
+                              )}
+                            </span>
+                          </div>
+                        )}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    data-aprendiz="atendimento-pagamento-adicionar"
+                    disabled={
+                      !formaSelecionada ||
+                      !valorRecebido ||
+                      valorAtual <= 0 ||
+                      valorAtual > saldoDepoisDoMisto + 0.001 ||
+                      (contasAtivas.length > 0 && !contaFinanceiraIdValida)
+                    }
+                    onClick={() => {
+                      if (
+                        !formaSelecionada ||
+                        valorAtual <= 0 ||
+                        valorAtual > saldoDepoisDoMisto + 0.001 ||
+                        (contasAtivas.length > 0 && !contaFinanceiraIdValida)
+                      ) {
+                        return;
+                      }
+
+                      setPagamentosMistos((atuais) => [
+                        ...atuais,
+                        {
+                          id: `${Date.now()}-${atuais.length}`,
+                          formaRecebimentoId: formaSelecionada.id,
+                          formaRecebimentoNome: formaSelecionada.nome,
+                          forma: formaSelecionada.forma,
+                          formaLabel: formaSelecionada.formaLabel,
+                          valor: arredondarCentavos(valorAtual),
+                          parcelas:
+                            formaSelecionada.forma === "CARTAO_CREDITO"
+                              ? parcelasPagamento
+                              : 1,
+                          operadoraId: formaSelecionada.operadora?.id || null,
+                          operadoraNome: formaSelecionada.operadora?.nome || null,
+                          contaFinanceiraId: contaFinanceiraIdValida,
+                          contaFinanceiraNome: contaSelecionada?.nome || null,
+                          contaPadraoId,
+                          contaAlteradaManualmente:
+                            contaPadraoId !== null &&
+                            contaFinanceiraIdValida !== contaPadraoId,
+                          taxaPercentual: previa.percentual,
+                          taxaFixa: previa.fixa,
+                          valorTarifa: previa.valorTarifa,
+                          valorLiquido: previa.valorLiquido,
+                        },
+                      ]);
+
+                      limparCamposParte();
+                    }}
+                    className="w-full rounded-md border border-xango-primary px-4 py-3 text-sm font-semibold text-xango-primary transition enabled:hover:bg-xango-background disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Adicionar esta forma
+                  </button>
+                </div>
+              )}
 
               <button
                 type="button"
                 data-aprendiz="atendimento-pagamento-confirmar"
                 disabled={
-                  !formaPagamento ||
-                  !valorRecebido ||
-                  Number(valorRecebido) <= 0 ||
-                  Number(valorRecebido) > saldo ||
+                  pagamentosMistos.length === 0 ||
                   processandoPagamento
                 }
                 onClick={async () => {
@@ -4058,8 +4712,7 @@ const contextoAprendizAtendimento = (() => {
                     await registrarPagamentoImediato(
                       guia.chave,
                       guiaId,
-                      Number(valorRecebido),
-                      formaPagamento
+                      pagamentosMistos
                     );
 
                   if (!sucesso) {
@@ -4067,15 +4720,29 @@ const contextoAprendizAtendimento = (() => {
                   }
 
                   setGuiaPagamentoAberta(null);
-                  setFormaPagamento("");
-                  setValorRecebido("");
+                  setPagamentosMistos([]);
+                  limparCamposParte();
                 }}
                 className="w-full rounded-md bg-xango-primary px-4 py-3 text-sm font-semibold text-white transition enabled:hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {processandoPagamento
                   ? "Registrando..."
-                  : "Confirmar pagamento"}
+                  : pagamentosMistos.length > 1
+                    ? `Confirmar pagamento misto (${pagamentosMistos.length} formas)`
+                    : "Confirmar pagamento"}
               </button>
+
+              {pagamentosMistos.length > 0 && saldoDepoisDoMisto > 0.009 && (
+                <p className="text-center text-xs text-xango-muted">
+                  Este registro será um pagamento parcial. Permanecerá saldo de{" "}
+                  <strong>
+                    {saldoDepoisDoMisto.toLocaleString("pt-BR", {
+                      style: "currency",
+                      currency: "BRL",
+                    })}
+                  </strong>.
+                </p>
+              )}
             </div>
           </>
         );
@@ -4083,6 +4750,7 @@ const contextoAprendizAtendimento = (() => {
     </aside>
   </>
 )}
+
 {guiaEstornoAberta && (
   <>
     <button
@@ -4115,6 +4783,13 @@ const contextoAprendizAtendimento = (() => {
           valorPago - totalEstornado,
           0
         );
+
+        const pagamentoEstornoSelecionado = pagamentosEstornaveis.find(
+          (item) => item.id === Number(pagamentoEstornoId)
+        ) || null;
+
+        const disponivelPagamentoSelecionado =
+          pagamentoEstornoSelecionado?.disponivel || 0;
 
         return (
           <>
@@ -4159,24 +4834,77 @@ const contextoAprendizAtendimento = (() => {
 
               <div data-aprendiz="atendimento-estorno-forma">
                 <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
-                  Forma do estorno
+                  Recebimento de origem
                 </label>
 
                 <select
-                  value={formaEstorno}
-                  onChange={(event) =>
-                    setFormaEstorno(event.target.value)
-                  }
-                  className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm outline-none focus:border-xango-primary"
+                  value={pagamentoEstornoId}
+                  onChange={(event) => {
+                    setPagamentoEstornoId(event.target.value);
+                    setValorEstornadoInformado("");
+                  }}
+                  disabled={carregandoPagamentosEstornaveis}
+                  className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm outline-none focus:border-xango-primary disabled:opacity-60"
                 >
-                  <option value="">Selecione</option>
-                  <option value="pix">PIX</option>
-                  <option value="dinheiro">Dinheiro</option>
-                  <option value="credito">Estorno no cartão</option>
-                  <option value="transferencia">
-                    Transferência
+                  <option value="">
+                    {carregandoPagamentosEstornaveis
+                      ? "Carregando recebimentos..."
+                      : "Selecione o recebimento"}
                   </option>
+                  {pagamentosEstornaveis.map((pagamento) => {
+                    const nome =
+                      pagamento.formaRecebimento || pagamento.formaLabel;
+                    const parcelas =
+                      pagamento.forma === "CARTAO_CREDITO" &&
+                      pagamento.parcelas > 1
+                        ? ` • ${pagamento.parcelas}x`
+                        : "";
+                    const conta = pagamento.contaFinanceira
+                      ? ` • ${pagamento.contaFinanceira}`
+                      : "";
+                    const disponivel = pagamento.disponivel.toLocaleString(
+                      "pt-BR",
+                      { style: "currency", currency: "BRL" }
+                    );
+
+                    return (
+                      <option key={pagamento.id} value={pagamento.id}>
+                        {nome}{parcelas}{conta} • disponível {disponivel}
+                      </option>
+                    );
+                  })}
                 </select>
+
+                {erroPagamentosEstornaveis && (
+                  <p className="mt-2 text-xs font-medium text-red-600">
+                    {erroPagamentosEstornaveis}
+                  </p>
+                )}
+
+                {!carregandoPagamentosEstornaveis &&
+                  !erroPagamentosEstornaveis &&
+                  pagamentosEstornaveis.length === 0 && (
+                    <p className="mt-2 text-xs text-xango-muted">
+                      Não há recebimentos com saldo disponível para estorno.
+                    </p>
+                  )}
+
+                {pagamentoEstornoSelecionado && (
+                  <div className="mt-3 rounded-md border border-xango-border bg-slate-50 p-3 text-xs text-xango-muted">
+                    <p>
+                      <strong className="text-xango-text">Conta:</strong>{" "}
+                      {pagamentoEstornoSelecionado.contaFinanceira ||
+                        "Não informada"}
+                    </p>
+                    <p className="mt-1">
+                      <strong className="text-xango-text">Disponível neste recebimento:</strong>{" "}
+                      {disponivelPagamentoSelecionado.toLocaleString(
+                        "pt-BR",
+                        { style: "currency", currency: "BRL" }
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div data-aprendiz="atendimento-estorno-valor">
@@ -4187,6 +4915,7 @@ const contextoAprendizAtendimento = (() => {
                 <input
                   type="number"
                   min="0"
+                  max={disponivelPagamentoSelecionado || undefined}
                   step="0.01"
                   value={valorEstornadoInformado}
                   onChange={(event) =>
@@ -4219,11 +4948,11 @@ const contextoAprendizAtendimento = (() => {
                 type="button"
                 data-aprendiz="atendimento-estorno-confirmar"
                 disabled={
-                  !formaEstorno ||
+                  !pagamentoEstornoSelecionado ||
                   !valorEstornadoInformado ||
                   Number(valorEstornadoInformado) <= 0 ||
                   Number(valorEstornadoInformado) >
-                    valorDisponivelEstorno ||
+                    disponivelPagamentoSelecionado + 0.001 ||
                   processandoEstorno
                 }
                 onClick={async () => {
@@ -4237,12 +4966,19 @@ const contextoAprendizAtendimento = (() => {
                     return;
                   }
 
+                  if (!pagamentoEstornoSelecionado) {
+                    alert(
+                      "Selecione o recebimento de origem do estorno."
+                    );
+                    return;
+                  }
+
                   const sucesso =
                     await registrarEstornoImediato(
                       guia.chave,
                       guiaId,
                       Number(valorEstornadoInformado),
-                      formaEstorno,
+                      pagamentoEstornoSelecionado.id,
                       observacaoEstorno
                     );
 
@@ -4251,7 +4987,7 @@ const contextoAprendizAtendimento = (() => {
                   }
 
                   setGuiaEstornoAberta(null);
-                  setFormaEstorno("");
+                  setPagamentoEstornoId("");
                   setValorEstornadoInformado("");
                   setObservacaoEstorno("");
                 }}
@@ -4344,6 +5080,8 @@ const contextoAprendizAtendimento = (() => {
                         (recibo) => {
                           const pagamento =
                             recibo.pagamentos[0];
+                          const pagamentoMisto =
+                            recibo.pagamentos.length > 1;
 
                           const imprimivel =
                             recibo.status === "ATIVO";
@@ -4400,10 +5138,22 @@ const contextoAprendizAtendimento = (() => {
 
                                   {pagamento && (
                                     <p className="mt-1 text-xs text-xango-muted">
-                                      {formaPagamentoLabel(
-                                        pagamento.forma
-                                      )}{" "}
-                                      •{" "}
+                                      {pagamentoMisto
+                                        ? `Pagamento misto • ${recibo.pagamentos.length} formas`
+                                        : `${
+                                            pagamento.formaRecebimento ||
+                                            formaPagamentoLabel(pagamento.forma)
+                                          }${
+                                            pagamento.forma === "CARTAO_CREDITO" &&
+                                            Number(pagamento.parcelas || 1) > 1
+                                              ? ` • ${pagamento.parcelas}x`
+                                              : ""
+                                          }${
+                                            pagamento.contaFinanceira
+                                              ? ` • ${pagamento.contaFinanceira}`
+                                              : ""
+                                          }`}
+                                      {" • "}
                                       {new Date(
                                         pagamento.criadoEm
                                       ).toLocaleString(
