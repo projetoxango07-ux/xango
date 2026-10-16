@@ -511,23 +511,12 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
 
   useEffect(() => {
     if (!guiaEstornoAberta) {
-      setPagamentoEstornoId("");
-      setPagamentosEstornaveis([]);
-      setErroPagamentosEstornaveis("");
       return;
     }
 
     const guiaId = guiaIds[guiaEstornoAberta];
-    setPagamentoEstornoId("");
-    setValorEstornadoInformado("");
-    setObservacaoEstorno("");
-    setPagamentosEstornaveis([]);
-    setErroPagamentosEstornaveis("");
 
     if (!guiaId) {
-      setErroPagamentosEstornaveis(
-        "Salve a guia antes de registrar o estorno."
-      );
       return;
     }
 
