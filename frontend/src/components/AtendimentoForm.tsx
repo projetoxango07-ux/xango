@@ -1991,18 +1991,24 @@ const contextoAprendizAtendimento = (() => {
           descontoMaximo
         );
 
-        const valorFinal = Math.max(
-          subtotal - valorBeneficio - descontoManual,
-          0
+        const valorFinal = arredondarCentavos(
+          Math.max(subtotal - valorBeneficio - descontoManual, 0)
         );
 
-        const valorPago = pagamentosGuias[guia.chave] || 0;
-        const valorEstornado = estornosGuias[guia.chave] || 0;
-        const valorPagoLiquido = Math.max(valorPago - valorEstornado, 0);
-        const saldoPendente = Math.max(valorFinal - valorPagoLiquido, 0);
-        const valorEstornoNecessario = Math.max(
-          valorPagoLiquido - valorFinal,
-          0
+        const valorPago = arredondarCentavos(
+          pagamentosGuias[guia.chave] || 0
+        );
+        const valorEstornado = arredondarCentavos(
+          estornosGuias[guia.chave] || 0
+        );
+        const valorPagoLiquido = arredondarCentavos(
+          Math.max(valorPago - valorEstornado, 0)
+        );
+        const saldoPendente = arredondarCentavos(
+          Math.max(valorFinal - valorPagoLiquido, 0)
+        );
+        const valorEstornoNecessario = arredondarCentavos(
+          Math.max(valorPagoLiquido - valorFinal, 0)
         );
         const possuiEstornoPendente = valorEstornoNecessario > 0;
 
@@ -3559,27 +3565,27 @@ const contextoAprendizAtendimento = (() => {
           descontoMaximo
         );
 
-        const valorFinal = Math.max(
-          subtotal - valorBeneficio - descontoManual,
-          0
+        const valorFinal = arredondarCentavos(
+          Math.max(subtotal - valorBeneficio - descontoManual, 0)
         );
 
-        const valorPago = pagamentosGuias[guia.chave] || 0;
-        const totalEstornado = estornosGuias[guia.chave] || 0;
-
-        const valorPagoLiquido = Math.max(
-          valorPago - totalEstornado,
-          0
+        const valorPago = arredondarCentavos(
+          pagamentosGuias[guia.chave] || 0
+        );
+        const totalEstornado = arredondarCentavos(
+          estornosGuias[guia.chave] || 0
         );
 
-        const saldoPendente = Math.max(
-          valorFinal - valorPagoLiquido,
-          0
+        const valorPagoLiquido = arredondarCentavos(
+          Math.max(valorPago - totalEstornado, 0)
         );
 
-        const valorEstornoNecessario = Math.max(
-          valorPagoLiquido - valorFinal,
-          0
+        const saldoPendente = arredondarCentavos(
+          Math.max(valorFinal - valorPagoLiquido, 0)
+        );
+
+        const valorEstornoNecessario = arredondarCentavos(
+          Math.max(valorPagoLiquido - valorFinal, 0)
         );
 
         const possuiEstornoPendente =
