@@ -470,6 +470,15 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [horariosAgendamento, setHorariosAgendamento] = useState<
   Record<number, string>
   >({});
+  const [clinicaConfiguracaoLoteId, setClinicaConfiguracaoLoteId] = useState("");
+  const [unidadeConfiguracaoLoteId, setUnidadeConfiguracaoLoteId] = useState("");
+  const [tipoAgendamentoConfiguracaoLote, setTipoAgendamentoConfiguracaoLote] =
+    useState<"" | "horario" | "aguardando" | "ordem">("");
+  const [dataConfiguracaoLote, setDataConfiguracaoLote] = useState("");
+  const [horarioConfiguracaoLote, setHorarioConfiguracaoLote] = useState("");
+  const [aplicandoConfiguracaoLote, setAplicandoConfiguracaoLote] =
+    useState(false);
+  const [mensagemConfiguracaoLote, setMensagemConfiguracaoLote] = useState("");
   const [descontosGuias, setDescontosGuias] = useState<
   Record<string, number>
   >({});
@@ -989,6 +998,36 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
       .map((resultado) => resultado.procedimento);
   }, [buscaProcedimento, procedimentos]);
 
+  const clinicasConfiguracaoLote = useMemo(() => {
+    return clinicas
+      .map((clinica) => {
+        const quantidadeCompativel = procedimentosSelecionados.filter(
+          (procedimento) => clinica.procedimentos.includes(procedimento.id)
+        ).length;
+
+        return {
+          clinica,
+          quantidadeCompativel,
+        };
+      })
+      .filter((item) => item.quantidadeCompativel > 0)
+      .sort((a, b) => {
+        if (a.quantidadeCompativel !== b.quantidadeCompativel) {
+          return b.quantidadeCompativel - a.quantidadeCompativel;
+        }
+
+        return a.clinica.nome.localeCompare(b.clinica.nome, "pt-BR");
+      });
+  }, [clinicas, procedimentosSelecionados]);
+
+  const clinicaConfiguracaoLote = useMemo(
+    () =>
+      clinicas.find(
+        (clinica) => clinica.id === Number(clinicaConfiguracaoLoteId)
+      ) || null,
+    [clinicaConfiguracaoLoteId, clinicas]
+  );
+
 async function selecionarClinicaDoProcedimento(
   procedimentoId: number,
   clinicaId: number
@@ -1077,6 +1116,217 @@ async function selecionarUnidadeDoProcedimento(
     );
   } finally {
     setCarregandoPrecoProcedimentoId(null);
+  }
+}
+
+async function aplicarConfiguracaoEmLote() {
+  const clinicaId = Number(clinicaConfiguracaoLoteId);
+  const clinica = clinicas.find((item) => item.id === clinicaId);
+
+  if (!clinica) {
+    setMensagemConfiguracaoLote("Selecione a clínica que será aplicada aos exames.");
+    return;
+  }
+
+  if (!tipoAgendamentoConfiguracaoLote) {
+    setMensagemConfiguracaoLote("Selecione o tipo de agendamento.");
+    return;
+  }
+
+  const unidadeId = Number(unidadeConfiguracaoLoteId) || null;
+
+  if (clinica.unidades.length > 0 && !unidadeId) {
+    setMensagemConfiguracaoLote("Selecione a unidade de atendimento.");
+    return;
+  }
+
+  if (
+    tipoAgendamentoConfiguracaoLote === "horario" &&
+    (!dataConfiguracaoLote || !horarioConfiguracaoLote)
+  ) {
+    setMensagemConfiguracaoLote(
+      "Informe a data e o horário antes de aplicar a configuração."
+    );
+    return;
+  }
+
+  if (
+    tipoAgendamentoConfiguracaoLote === "ordem" &&
+    !dataConfiguracaoLote
+  ) {
+    setMensagemConfiguracaoLote(
+      "Informe a data prevista antes de aplicar a configuração."
+    );
+    return;
+  }
+
+  try {
+    setAplicandoConfiguracaoLote(true);
+    setMensagemConfiguracaoLote("");
+
+    let precosUnidade = new Map<
+      number,
+      { valorPaciente: number; valorRepasse: number }
+    >();
+
+    if (unidadeId) {
+      const resposta = await fetch(
+        `${API_URL}/clinicas/${clinicaId}/unidades/${unidadeId}/precos`,
+        { cache: "no-store" }
+      );
+      const dados = await resposta.json();
+
+      if (!resposta.ok) {
+        throw new Error(
+          dados.erro || "Não foi possível carregar os preços da unidade."
+        );
+      }
+
+      precosUnidade = new Map(
+        (Array.isArray(dados.precos) ? dados.precos : [])
+          .map(
+            (item: {
+              procedimento?: { id?: number };
+              valorPaciente?: string | number;
+              valorRepasse?: string | number;
+            }) => [
+              Number(item.procedimento?.id),
+              {
+                valorPaciente: Number(item.valorPaciente || 0),
+                valorRepasse: Number(item.valorRepasse || 0),
+              },
+            ] as const
+          )
+          .filter((entrada: readonly [number, { valorPaciente: number; valorRepasse: number }]) =>
+            Number.isInteger(entrada[0])
+          )
+      );
+    }
+
+    const idsAplicados = new Set<number>();
+    const precosAplicados = new Map<
+      number,
+      { valorPaciente: number; valorRepasse: number }
+    >();
+
+    for (const procedimento of procedimentosSelecionados) {
+      if (!clinica.procedimentos.includes(procedimento.id)) {
+        continue;
+      }
+
+      const preco = unidadeId
+        ? precosUnidade.get(procedimento.id)
+        : clinica.precos[procedimento.id];
+
+      if (!preco) {
+        continue;
+      }
+
+      idsAplicados.add(procedimento.id);
+      precosAplicados.set(procedimento.id, preco);
+    }
+
+    if (idsAplicados.size === 0) {
+      setMensagemConfiguracaoLote(
+        "Nenhum dos procedimentos selecionados está disponível nessa clínica/unidade."
+      );
+      return;
+    }
+
+    setClinicasSelecionadas((atuais) => {
+      const proximo = { ...atuais };
+
+      idsAplicados.forEach((procedimentoId) => {
+        proximo[procedimentoId] = clinicaId;
+      });
+
+      return proximo;
+    });
+
+    setUnidadesSelecionadas((atuais) => {
+      const proximo = { ...atuais };
+
+      idsAplicados.forEach((procedimentoId) => {
+        if (unidadeId) {
+          proximo[procedimentoId] = unidadeId;
+        } else {
+          delete proximo[procedimentoId];
+        }
+      });
+
+      return proximo;
+    });
+
+    setTiposAgendamento((atuais) => {
+      const proximo = { ...atuais };
+
+      idsAplicados.forEach((procedimentoId) => {
+        proximo[procedimentoId] = tipoAgendamentoConfiguracaoLote;
+      });
+
+      return proximo;
+    });
+
+    setDatasAgendamento((atuais) => {
+      const proximo = { ...atuais };
+
+      idsAplicados.forEach((procedimentoId) => {
+        if (
+          tipoAgendamentoConfiguracaoLote === "horario" ||
+          tipoAgendamentoConfiguracaoLote === "ordem"
+        ) {
+          proximo[procedimentoId] = dataConfiguracaoLote;
+        } else {
+          delete proximo[procedimentoId];
+        }
+      });
+
+      return proximo;
+    });
+
+    setHorariosAgendamento((atuais) => {
+      const proximo = { ...atuais };
+
+      idsAplicados.forEach((procedimentoId) => {
+        if (tipoAgendamentoConfiguracaoLote === "horario") {
+          proximo[procedimentoId] = horarioConfiguracaoLote;
+        } else {
+          delete proximo[procedimentoId];
+        }
+      });
+
+      return proximo;
+    });
+
+    setProcedimentosSelecionados((atuais) =>
+      atuais.map((procedimento) => {
+        const preco = precosAplicados.get(procedimento.id);
+
+        return preco
+          ? {
+              ...procedimento,
+              valor: preco.valorPaciente,
+              repasse: preco.valorRepasse,
+            }
+          : procedimento;
+      })
+    );
+
+    const ignorados = procedimentosSelecionados.length - idsAplicados.size;
+
+    setMensagemConfiguracaoLote(
+      ignorados > 0
+        ? `Configuração aplicada a ${idsAplicados.size} procedimento(s). ${ignorados} não estava(m) disponível(is) nessa clínica/unidade e permaneceu(ram) sem alteração.`
+        : `Configuração aplicada aos ${idsAplicados.size} procedimento(s) selecionados.`
+    );
+  } catch (erro) {
+    setMensagemConfiguracaoLote(
+      erro instanceof Error
+        ? erro.message
+        : "Não foi possível aplicar a configuração em lote."
+    );
+  } finally {
+    setAplicandoConfiguracaoLote(false);
   }
 }
 
@@ -2724,6 +2974,201 @@ const contextoAprendizAtendimento = (() => {
       </p>
     </div>
 
+    {procedimentosSelecionados.length > 1 && (
+      <div className="mb-6 rounded-lg border border-xango-primary/25 bg-purple-50/40 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-xango-text">
+              Configuração em lote
+            </p>
+            <p className="mt-1 text-xs leading-5 text-xango-muted">
+              Defina uma vez a clínica, unidade e o agendamento. O sistema aplicará
+              somente aos exames disponíveis nessa clínica/unidade; os demais não
+              serão alterados.
+            </p>
+          </div>
+
+          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-xango-primary">
+            {procedimentosSelecionados.length} procedimentos
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+              Clínica
+            </label>
+            <select
+              value={clinicaConfiguracaoLoteId}
+              onChange={(event) => {
+                const valor = event.target.value;
+                setClinicaConfiguracaoLoteId(valor);
+                setMensagemConfiguracaoLote("");
+
+                const clinicaSelecionada = clinicas.find(
+                  (clinica) => clinica.id === Number(valor)
+                );
+
+                setUnidadeConfiguracaoLoteId(
+                  clinicaSelecionada?.unidades.length === 1
+                    ? String(clinicaSelecionada.unidades[0].id)
+                    : ""
+                );
+              }}
+              className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm text-xango-text outline-none focus:border-xango-primary"
+            >
+              <option value="">Selecione...</option>
+              {clinicasConfiguracaoLote.map(
+                ({ clinica, quantidadeCompativel }) => (
+                  <option key={clinica.id} value={clinica.id}>
+                    {clinica.nome} • {quantidadeCompativel}/
+                    {procedimentosSelecionados.length} exames
+                  </option>
+                )
+              )}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+              Unidade
+            </label>
+            {clinicaConfiguracaoLote?.unidades.length ? (
+              <select
+                value={unidadeConfiguracaoLoteId}
+                onChange={(event) => {
+                  setUnidadeConfiguracaoLoteId(event.target.value);
+                  setMensagemConfiguracaoLote("");
+                }}
+                className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm text-xango-text outline-none focus:border-xango-primary"
+              >
+                <option value="">Selecione...</option>
+                {clinicaConfiguracaoLote.unidades.map((unidade) => (
+                  <option key={unidade.id} value={unidade.id}>
+                    {unidade.nome}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="mt-2 rounded-md border border-xango-border bg-xango-background px-3 py-3 text-sm text-xango-muted">
+                {clinicaConfiguracaoLoteId
+                  ? "A clínica usa o preço-base, sem unidade."
+                  : "Selecione primeiro a clínica."}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+              Agendamento
+            </label>
+            <select
+              value={tipoAgendamentoConfiguracaoLote}
+              onChange={(event) => {
+                const tipo = event.target.value as
+                  | ""
+                  | "horario"
+                  | "aguardando"
+                  | "ordem";
+                setTipoAgendamentoConfiguracaoLote(tipo);
+                setMensagemConfiguracaoLote("");
+
+                if (tipo !== "horario") {
+                  setHorarioConfiguracaoLote("");
+                }
+
+                if (tipo === "aguardando") {
+                  setDataConfiguracaoLote("");
+                }
+              }}
+              className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm text-xango-text outline-none focus:border-xango-primary"
+            >
+              <option value="">Selecione...</option>
+              <option value="horario">Data e horário</option>
+              <option value="aguardando">Aguardando clínica</option>
+              <option value="ordem">Ordem de chegada</option>
+            </select>
+          </div>
+
+          <div>
+            {tipoAgendamentoConfiguracaoLote === "horario" && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                    Data
+                  </label>
+                  <input
+                    type="date"
+                    value={dataConfiguracaoLote}
+                    onChange={(event) => setDataConfiguracaoLote(event.target.value)}
+                    className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm text-xango-text outline-none focus:border-xango-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                    Horário
+                  </label>
+                  <input
+                    type="time"
+                    value={horarioConfiguracaoLote}
+                    onChange={(event) =>
+                      setHorarioConfiguracaoLote(event.target.value)
+                    }
+                    className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm text-xango-text outline-none focus:border-xango-primary"
+                  />
+                </div>
+              </div>
+            )}
+
+            {tipoAgendamentoConfiguracaoLote === "ordem" && (
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                  Data prevista
+                </label>
+                <input
+                  type="date"
+                  value={dataConfiguracaoLote}
+                  onChange={(event) => setDataConfiguracaoLote(event.target.value)}
+                  className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm text-xango-text outline-none focus:border-xango-primary"
+                />
+              </div>
+            )}
+
+            {tipoAgendamentoConfiguracaoLote === "aguardando" && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                A data e o horário poderão ser informados depois.
+              </div>
+            )}
+
+            {!tipoAgendamentoConfiguracaoLote && (
+              <div className="mt-2 rounded-md border border-xango-border bg-xango-background px-3 py-3 text-sm text-xango-muted">
+                Selecione o tipo de agendamento.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void aplicarConfiguracaoEmLote()}
+            disabled={aplicandoConfiguracaoLote}
+            className="rounded-md bg-xango-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {aplicandoConfiguracaoLote
+              ? "Aplicando..."
+              : "Aplicar aos exames compatíveis"}
+          </button>
+
+          {mensagemConfiguracaoLote && (
+            <p className="text-xs leading-5 text-xango-muted">
+              {mensagemConfiguracaoLote}
+            </p>
+          )}
+        </div>
+      </div>
+    )}
+
     <div className="space-y-4">
       {procedimentosSelecionados.map((procedimento) => {
         const clinicasDisponiveis = clinicas.filter((clinica) =>
@@ -3283,15 +3728,37 @@ const contextoAprendizAtendimento = (() => {
                           })}
                         </p>
 
-                        {!cancelado && (
+                        {cancelado ? (
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              setProcedimentosCancelados((atuais) => {
+                                const proximo = { ...atuais };
+                                delete proximo[procedimento.id];
+                                return proximo;
+                              });
+                              setGuiasSalvas((atuais) => ({
+                                ...atuais,
+                                [guia.chave]: false,
+                              }));
+                            }}
+                            className="rounded-md border border-emerald-200 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                          >
+                            Reativar
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
                               setProcedimentosCancelados((atuais) => ({
                                 ...atuais,
                                 [procedimento.id]: true,
-                              }))
-                            }
+                              }));
+                              setGuiasSalvas((atuais) => ({
+                                ...atuais,
+                                [guia.chave]: false,
+                              }));
+                            }}
                             className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50"
                           >
                             Cancelar
@@ -3564,7 +4031,7 @@ const contextoAprendizAtendimento = (() => {
                   }}
                   className="rounded-md bg-xango-primary px-4 py-2 text-xs font-semibold text-white transition hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Salvar guia
+                  {guiaIds[guia.chave] ? "Salvar alterações" : "Salvar guia"}
                 </button>
 
                 {procedimentosAtivos.length > 0 && (
