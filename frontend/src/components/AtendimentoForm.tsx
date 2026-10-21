@@ -742,7 +742,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         const novosPagamentos: Record<string, number> = {};
         const novosEstornos: Record<string, number> = {};
 
-        dados.guias.forEach((guia) => {
+        dados.guias.filter((guia) => guia.status !== "CANCELADA").forEach((guia) => {
           const primeiroItem = guia.itens[0];
 
           const tipo: "horario" | "aguardando" | "ordem" =
