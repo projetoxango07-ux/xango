@@ -22,6 +22,27 @@ enum ModoPrecoProcedimento {
   CH
 }
 
+enum SexoBiologicoPaciente {
+  MASCULINO
+  FEMININO
+  INTERSEXO
+  NAO_INFORMADO
+}
+
+enum GeneroPaciente {
+  HOMEM
+  MULHER
+  NAO_BINARIO
+  OUTRO
+  PREFERE_NAO_INFORMAR
+}
+
+enum MultiplicidadeProcedimento {
+  UNICO
+  QUANTIDADE
+  DETALHADO
+}
+
 enum StatusAtendimento {
   EM_ANDAMENTO
   AGUARDANDO_PAGAMENTO
@@ -351,6 +372,9 @@ model Paciente {
   dataNascimento       DateTime?
   nomeMae              String?
 
+  sexoBiologico        SexoBiologicoPaciente @default(NAO_INFORMADO)
+  genero               GeneroPaciente?
+  generoDescricao      String?
   cep                  String?
   logradouro           String?
   numeroEndereco       String?
@@ -530,10 +554,30 @@ model ProcedimentoReferencia {
 
   procedimentos      Procedimento[]
 
+  equivalenciasHistoricas ProcedimentoEquivalenciaHistorica[]
   criadoEm           DateTime       @default(now())
   atualizadoEm       DateTime       @updatedAt
 
   @@index([nomeTuss])
+}
+
+model ProcedimentoEquivalenciaHistorica {
+  id                  Int                     @id @default(autoincrement())
+  codigoTussHistorico String                  @unique
+  nomeHistorico       String?
+
+  referenciaAtualId   Int
+  referenciaAtual     ProcedimentoReferencia @relation(fields: [referenciaAtualId], references: [id])
+
+  fonte               String?
+  observacao          String?
+  ativo               Boolean                 @default(true)
+
+  criadoEm            DateTime                @default(now())
+  atualizadoEm        DateTime                @updatedAt
+
+  @@index([referenciaAtualId])
+  @@index([ativo])
 }
 
 model Procedimento {
@@ -543,6 +587,7 @@ model Procedimento {
   preparo        String?
   aliases        String[]      @default([])
 
+  multiplicidade MultiplicidadeProcedimento @default(UNICO)
   // Catálogo operacional Digna. A referência oficial fica separada em ProcedimentoReferencia.
   referenciaId   Int?
   referencia     ProcedimentoReferencia? @relation(fields: [referenciaId], references: [id])
@@ -678,6 +723,8 @@ model ItemModeloOrcamento {
   procedimentoId    Int
   procedimento      Procedimento @relation(fields: [procedimentoId], references: [id])
 
+  quantidade        Int       @default(1)
+  detalhamento      String?
   // Clínica/unidade são preferências opcionais. O preço nunca fica salvo no modelo.
   clinicaId         Int?
   clinica           Clinica? @relation(fields: [clinicaId], references: [id])
@@ -688,7 +735,7 @@ model ItemModeloOrcamento {
   criadoEm          DateTime  @default(now())
   atualizadoEm      DateTime  @updatedAt
 
-  @@unique([modeloId, procedimentoId])
+  @@index([modeloId, procedimentoId])
   @@index([procedimentoId])
   @@index([clinicaId])
   @@index([unidadeClinicaId])
@@ -744,6 +791,8 @@ model ItemOrcamento {
   procedimentoId    Int
   procedimento      Procedimento    @relation(fields: [procedimentoId], references: [id])
 
+  quantidade        Int             @default(1)
+  detalhamento      String?
   clinicaId         Int?
   clinica           Clinica?        @relation(fields: [clinicaId], references: [id])
 
@@ -848,6 +897,8 @@ model ItemGuia {
   procedimentoId      Int
   procedimento        Procedimento      @relation(fields: [procedimentoId], references: [id])
 
+  quantidade          Int               @default(1)
+  detalhamento        String?
   status              StatusItemGuia    @default(ATIVO)
 
   valorPaciente       Decimal           @db.Decimal(10, 2)
@@ -881,7 +932,7 @@ model OperadoraPagamento {
   pagamentos      Pagamento[]
 
   criadoEm        DateTime         @default(now())
-  atualizadoEm    DateTime         @updatedAt
+  atualizadoEm    DateTime         @default(now()) @updatedAt
 
   @@unique([organizacaoId, nome])
   @@index([organizacaoId, ativo])
@@ -900,7 +951,7 @@ model TarifaPagamento {
   ativo           Boolean           @default(true)
 
   criadoEm        DateTime          @default(now())
-  atualizadoEm    DateTime          @updatedAt
+  atualizadoEm    DateTime          @default(now()) @updatedAt
 
   @@unique([operadoraId, forma, parcelas])
   @@index([forma, parcelas])
@@ -925,7 +976,7 @@ model ContaFinanceira {
   padroesRepasse  ContaPadraoRepasse[]
 
   criadoEm        DateTime            @default(now())
-  atualizadoEm    DateTime            @updatedAt
+  atualizadoEm    DateTime            @default(now()) @updatedAt
 
   @@unique([organizacaoId, nome])
   @@index([organizacaoId, ativo])
@@ -952,7 +1003,7 @@ model FormaRecebimento {
   pagamentos      Pagamento[]
 
   criadoEm        DateTime            @default(now())
-  atualizadoEm    DateTime            @updatedAt
+  atualizadoEm    DateTime            @default(now()) @updatedAt
 
   @@unique([organizacaoId, nome])
   @@index([organizacaoId, forma, ativo])
@@ -972,7 +1023,7 @@ model TarifaFormaRecebimento {
   ativo                 Boolean          @default(true)
 
   criadoEm              DateTime         @default(now())
-  atualizadoEm          DateTime         @updatedAt
+  atualizadoEm          DateTime         @default(now()) @updatedAt
 
   @@unique([formaRecebimentoId, parcelas])
   @@index([parcelas])
@@ -989,7 +1040,7 @@ model ContaPadraoRepasse {
   contaFinanceira     ContaFinanceira        @relation(fields: [contaFinanceiraId], references: [id], onDelete: Cascade)
 
   criadoEm            DateTime               @default(now())
-  atualizadoEm        DateTime               @updatedAt
+  atualizadoEm        DateTime               @default(now()) @updatedAt
 
   @@unique([organizacaoId, forma])
   @@index([contaFinanceiraId])
