@@ -7941,6 +7941,21 @@ app.get("/pacientes", async (_req, res) => {
 });
 
 
+const SEXOS_BIOLOGICOS_VALIDOS = new Set([
+  "MASCULINO",
+  "FEMININO",
+  "INTERSEXO",
+  "NAO_INFORMADO",
+]);
+
+const GENEROS_PACIENTE_VALIDOS = new Set([
+  "HOMEM",
+  "MULHER",
+  "NAO_BINARIO",
+  "OUTRO",
+  "PREFERE_NAO_INFORMAR",
+]);
+
 function cadastroPaciente(paciente: any) {
   const obrigatorios: Array<[string, boolean]> = [
     ["Nome completo", Boolean(paciente.nome?.trim())],
@@ -8254,6 +8269,7 @@ app.get("/pacientes/:id", async (req, res) => {
       id: paciente.id, codigoPublico: paciente.codigoPublico, nome: paciente.nome, nomeSocial: paciente.nomeSocial,
       cpf: paciente.cpf, rg: paciente.rg, telefone: paciente.telefone, telefoneSecundario: paciente.telefoneSecundario,
       email: paciente.email, dataNascimento: paciente.dataNascimento, nomeMae: paciente.nomeMae,
+      sexoBiologico: paciente.sexoBiologico, genero: paciente.genero, generoDescricao: paciente.generoDescricao,
       cep: paciente.cep, logradouro: paciente.logradouro, numeroEndereco: paciente.numeroEndereco,
       complementoEndereco: paciente.complementoEndereco, bairro: paciente.bairro, cidade: paciente.cidade, uf: paciente.uf,
       responsavelLegalEhMae: paciente.responsavelLegalEhMae, responsavelLegalNome: paciente.responsavelLegalNome,
@@ -8279,11 +8295,58 @@ app.patch("/pacientes/:id", async (req, res) => {
     const duplicado = await prisma.paciente.findFirst({ where: { cpf, id: { not: pacienteId } } });
     if (duplicado) return res.status(409).json({ erro: "Já existe outro paciente cadastrado com este CPF." });
     const limpa = (v: unknown) => typeof v === "string" && v.trim() ? v.trim() : null;
+
+    const sexoBiologicoRecebido =
+      typeof b.sexoBiologico === "string"
+        ? b.sexoBiologico.trim().toUpperCase()
+        : "";
+
+    if (
+      b.sexoBiologico !== undefined &&
+      sexoBiologicoRecebido &&
+      !SEXOS_BIOLOGICOS_VALIDOS.has(sexoBiologicoRecebido)
+    ) {
+      return res.status(400).json({ erro: "Sexo biol?gico inv?lido." });
+    }
+
+    const generoRecebido =
+      typeof b.genero === "string"
+        ? b.genero.trim().toUpperCase()
+        : "";
+
+    if (
+      b.genero !== undefined &&
+      generoRecebido &&
+      !GENEROS_PACIENTE_VALIDOS.has(generoRecebido)
+    ) {
+      return res.status(400).json({ erro: "G?nero inv?lido." });
+    }
+
+    if (
+      b.genero !== undefined &&
+      generoRecebido === "OUTRO" &&
+      !limpa(b.generoDescricao)
+    ) {
+      return res.status(400).json({
+        erro: "Informe a descri??o do g?nero quando selecionar Outro.",
+      });
+    }
     const paciente = await prisma.paciente.update({ where: { id: pacienteId }, data: {
       nome: b.nome.trim().replace(/\s+/g," ").toUpperCase(), nomeSocial: limpa(b.nomeSocial), cpf,
       rg: limpa(b.rg), telefone: b.telefone.replace(/\D/g,""), telefoneSecundario: limpa(b.telefoneSecundario)?.replace(/\D/g,""),
       email: limpa(b.email)?.toLowerCase(), dataNascimento: b.dataNascimento ? new Date(`${b.dataNascimento}T12:00:00`) : null,
-      nomeMae: limpa(b.nomeMae)?.toUpperCase(), cep: limpa(b.cep)?.replace(/\D/g,""), logradouro: limpa(b.logradouro),
+      nomeMae: limpa(b.nomeMae)?.toUpperCase(),
+      ...(b.sexoBiologico !== undefined
+        ? { sexoBiologico: (sexoBiologicoRecebido || "NAO_INFORMADO") as any }
+        : {}),
+      ...(b.genero !== undefined
+        ? {
+            genero: generoRecebido ? (generoRecebido as any) : null,
+            generoDescricao:
+              generoRecebido === "OUTRO" ? limpa(b.generoDescricao) : null,
+          }
+        : {}),
+      cep: limpa(b.cep)?.replace(/\D/g,""), logradouro: limpa(b.logradouro),
       numeroEndereco: limpa(b.numeroEndereco), complementoEndereco: limpa(b.complementoEndereco), bairro: limpa(b.bairro),
       cidade: limpa(b.cidade), uf: limpa(b.uf)?.toUpperCase(), responsavelLegalEhMae: Boolean(b.responsavelLegalEhMae),
       responsavelLegalNome: b.responsavelLegalEhMae ? null : limpa(b.responsavelLegalNome)?.toUpperCase(),
@@ -8331,13 +8394,61 @@ app.delete("/pacientes/:id/familiares/:vinculoId", async (req, res) => {
 // ======================================================
 app.post("/pacientes", async (req, res) => {
   try {
-    const { nome, cpf, telefone, email, dataNascimento } = req.body;
+    const {
+      nome,
+      cpf,
+      telefone,
+      email,
+      dataNascimento,
+      sexoBiologico,
+      genero,
+      generoDescricao,
+    } = req.body;
     if (!nome?.trim() || !cpf?.trim() || !telefone?.trim()) return res.status(400).json({ erro: "Nome, CPF e telefone são obrigatórios." });
     const cpfLimpo = cpf.replace(/\D/g, ""); const telefoneLimpo = telefone.replace(/\D/g, "");
+
+    const sexoBiologicoNormalizado =
+      typeof sexoBiologico === "string"
+        ? sexoBiologico.trim().toUpperCase()
+        : "";
+
+    if (
+      sexoBiologicoNormalizado &&
+      !SEXOS_BIOLOGICOS_VALIDOS.has(sexoBiologicoNormalizado)
+    ) {
+      return res.status(400).json({ erro: "Sexo biol?gico inv?lido." });
+    }
+
+    const generoNormalizado =
+      typeof genero === "string"
+        ? genero.trim().toUpperCase()
+        : "";
+
+    if (
+      generoNormalizado &&
+      !GENEROS_PACIENTE_VALIDOS.has(generoNormalizado)
+    ) {
+      return res.status(400).json({ erro: "G?nero inv?lido." });
+    }
+
+    const generoDescricaoNormalizada =
+      typeof generoDescricao === "string" && generoDescricao.trim()
+        ? generoDescricao.trim()
+        : null;
+
+    if (generoNormalizado === "OUTRO" && !generoDescricaoNormalizada) {
+      return res.status(400).json({
+        erro: "Informe a descri??o do g?nero quando selecionar Outro.",
+      });
+    }
     const pacienteExistente = await prisma.paciente.findUnique({ where: { cpf: cpfLimpo } });
     if (pacienteExistente) return res.status(409).json({ erro: "Já existe um paciente cadastrado com este CPF." });
     const codigoPublico = await gerarCodigoPublicoUnico("PAC");
-    const paciente = await prisma.paciente.create({ data: { codigoPublico, nome: nome.trim().replace(/\s+/g," ").toUpperCase(), cpf: cpfLimpo, telefone: telefoneLimpo, email: email?.trim() ? email.trim().toLowerCase() : null, dataNascimento: dataNascimento ? new Date(`${dataNascimento}T12:00:00`) : null, beneficioAtivo: false } });
+    const paciente = await prisma.paciente.create({ data: { codigoPublico, nome: nome.trim().replace(/\s+/g," ").toUpperCase(), cpf: cpfLimpo, telefone: telefoneLimpo, email: email?.trim() ? email.trim().toLowerCase() : null, dataNascimento: dataNascimento ? new Date(`${dataNascimento}T12:00:00`) : null,
+      sexoBiologico: (sexoBiologicoNormalizado || "NAO_INFORMADO") as any,
+      genero: generoNormalizado ? (generoNormalizado as any) : null,
+      generoDescricao: generoNormalizado === "OUTRO" ? generoDescricaoNormalizada : null,
+      beneficioAtivo: false } });
     return res.status(201).json({ ...paciente, cadastro: cadastroPaciente(paciente) });
   } catch (erro) { console.error("Erro ao cadastrar paciente:", erro); return res.status(500).json({ erro: "Não foi possível cadastrar o paciente." }); }
 });
