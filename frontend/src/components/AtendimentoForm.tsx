@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import BuscaMaePaciente from "./BuscaMaePaciente";
 import {
   useRouter,
   useSearchParams,
@@ -405,6 +406,7 @@ function normalizarBuscaProcedimento(valor: string) {
 export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const pacienteIdDaFicha = searchParams.get("pacienteId");
   const modoRevisao =
   searchParams.get("modo") === "revisao";
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
@@ -448,9 +450,16 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [novoNome, setNovoNome] = useState("");
   const [novoCpf, setNovoCpf] = useState("");
   const [novoNascimento, setNovoNascimento] = useState("");
+  const [novoNomeMae, setNovoNomeMae] = useState("");
+  const [novoMaeId, setNovoMaeId] = useState<number | null>(null);
   const [novoTelefone, setNovoTelefone] = useState("");
   const [novoEmail, setNovoEmail] = useState("");
+  const [novoSexoBiologico, setNovoSexoBiologico] = useState("NAO_INFORMADO");
+  const [novoGenero, setNovoGenero] = useState("");
+  const [novoGeneroDescricao, setNovoGeneroDescricao] = useState("");
   const [buscaProcedimento, setBuscaProcedimento] = useState("");
+  const pesquisaProcedimentoRef = useRef<HTMLInputElement>(null);
+  const [guiasExpandidas, setGuiasExpandidas] = useState<Record<string, boolean>>({});
   const [procedimentosSelecionados, setProcedimentosSelecionados] = useState<
      Procedimento[]
   >([]);
@@ -861,6 +870,43 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         modoRevisao,
       ]);
 
+  // Ao iniciar um novo atendimento pela ficha do paciente, pré-selecionar o cadastro.
+  // Não se aplica à reabertura de atendimentos já existentes.
+  useEffect(() => {
+    const id = Number(pacienteIdDaFicha);
+    if (atendimentoId || carregandoDados || !Number.isInteger(id) || id <= 0) return;
+    const controller = new AbortController();
+
+    async function carregarPacienteDaFicha() {
+      try {
+        const resposta = await fetch(`${API_URL}/pacientes/${id}`, {
+          cache: "no-store", signal: controller.signal,
+        });
+        const dados: PacienteApi & { erro?: string } = await resposta.json();
+        if (!resposta.ok) throw new Error(dados.erro || "Paciente não encontrado.");
+        if (controller.signal.aborted) return;
+        const escolhido: Paciente = {
+          id: dados.id, nome: dados.nome, cpf: dados.cpf,
+          telefone: dados.telefone, email: dados.email || undefined,
+          dataNascimento: dados.dataNascimento || undefined,
+          empresa: dados.empresa?.nome, beneficioAtivo: dados.beneficioAtivo,
+          beneficioNome: dados.beneficioAtivo ? dados.empresa?.nome : undefined,
+          beneficioPercentual: dados.beneficioAtivo ? Number(dados.empresa?.percentualBeneficio || 0) : 0,
+          cadastroPercentual: dados.cadastro?.percentual,
+          cadastroCompleto: dados.cadastro?.completo,
+        };
+        setPacienteSelecionado(atual => atual ?? escolhido);
+        setBusca(atual => atual.trim() || escolhido.nome);
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          setErroBuscaPaciente(e instanceof Error ? e.message : "Não foi possível carregar o paciente da ficha.");
+        }
+      }
+    }
+    void carregarPacienteDaFicha();
+    return () => controller.abort();
+  }, [pacienteIdDaFicha, atendimentoId, carregandoDados]);
+
   useEffect(() => {
     const termo = busca.trim();
 
@@ -949,7 +995,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
     const termo = normalizarBuscaProcedimento(buscaProcedimento);
 
     if (!termo) {
-      return procedimentos;
+      return [];
     }
 
     return procedimentos
@@ -1040,6 +1086,10 @@ async function selecionarClinicaDoProcedimento(
     delete proximo[procedimentoId];
     return proximo;
   });
+  // Uma única unidade ativa: mesma consulta de preço usada na seleção manual.
+  if (clinica.unidades.length === 1) {
+    void selecionarUnidadeDoProcedimento(procedimentoId, clinicaId, clinica.unidades[0].id);
+  }
 
   setProcedimentosSelecionados((atuais) =>
     atuais.map((procedimento) =>
@@ -2250,6 +2300,10 @@ const contextoAprendizAtendimento = (() => {
   }
 
   async function salvarNovoPaciente() {
+    if (novoGenero === "OUTRO" && !novoGeneroDescricao.trim()) {
+      alert("Informe a descrição do gênero quando selecionar Outro.");
+      return;
+    }
     if (!novoNome.trim() || !novoCpf.trim() || !novoTelefone.trim()) {
       alert("Preencha nome, CPF e telefone.");
       return;
@@ -2267,6 +2321,10 @@ const contextoAprendizAtendimento = (() => {
           telefone: novoTelefone,
           email: novoEmail,
           dataNascimento: novoNascimento,
+          nomeMae: novoNomeMae,
+          sexoBiologico: novoSexoBiologico,
+          genero: novoGenero || null,
+          generoDescricao: novoGenero === "OUTRO" ? novoGeneroDescricao.trim() : null,
         }),
       });
 
@@ -2298,6 +2356,17 @@ const contextoAprendizAtendimento = (() => {
         cadastroCompleto: dados.cadastro?.completo,
       };
 
+      if (novoMaeId) {
+        try {
+          const vinculo = await fetch(`${API_URL}/pacientes/${novoPaciente.id}/familiares`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pacienteId: novoMaeId, tipo: "MAE" }),
+          });
+          if (!vinculo.ok) throw new Error("Não foi possível vincular a mãe.");
+        } catch {
+          alert("Paciente cadastrado, mas o vínculo com a mãe não foi criado. Abra a ficha para conferir e vincular manualmente.");
+        }
+      }
       setPacientes((atuais) => [...atuais, novoPaciente]);
       setPacienteSelecionado(novoPaciente);
       setBusca(novoPaciente.nome);
@@ -2306,8 +2375,13 @@ const contextoAprendizAtendimento = (() => {
       setNovoNome("");
       setNovoCpf("");
       setNovoNascimento("");
+      setNovoNomeMae("");
+      setNovoMaeId(null);
       setNovoTelefone("");
       setNovoEmail("");
+      setNovoSexoBiologico("NAO_INFORMADO");
+      setNovoGenero("");
+      setNovoGeneroDescricao("");
     } catch (erro) {
       console.error("Erro ao cadastrar paciente:", erro);
       alert(
@@ -2836,13 +2910,18 @@ const contextoAprendizAtendimento = (() => {
     <input
       data-aprendiz="atendimento-procedimento-busca"
       type="text"
+      ref={pesquisaProcedimentoRef}
       value={buscaProcedimento}
       onChange={(event) => setBuscaProcedimento(event.target.value)}
       placeholder="Pesquisar por nome ou sinônimo (ex.: rins e vias)..."
       className="w-full rounded-md border border-xango-border bg-white px-4 py-3 text-sm outline-none transition focus:border-xango-primary focus:ring-2 focus:ring-xango-primary/10"
     />
 
-    <div className="mt-5 overflow-hidden rounded-md border border-xango-border">
+    {buscaProcedimento.trim() ? (
+    <div className="mt-3 max-h-72 overflow-y-auto rounded-md border border-xango-border">
+      {procedimentosFiltrados.length === 0 && (
+        <p className="p-4 text-sm text-xango-muted">Nenhum procedimento encontrado.</p>
+      )}
       {procedimentosFiltrados.map((procedimento) => {
         const selecionado = procedimentosSelecionados.some(
           (item) => item.id === procedimento.id
@@ -2866,6 +2945,9 @@ const contextoAprendizAtendimento = (() => {
 
                 return [...atuais, procedimento];
               });
+              setBuscaProcedimento("");
+              // Aguarda o React atualizar a lista antes de devolver o cursor.
+              window.requestAnimationFrame(() => pesquisaProcedimentoRef.current?.focus());
             }}
 
             className={`flex w-full items-center justify-between border-b border-xango-border px-4 py-3 text-left transition last:border-b-0 ${
@@ -2907,6 +2989,9 @@ const contextoAprendizAtendimento = (() => {
         );
       })}
     </div>
+    ) : (
+      <p className="mt-3 text-xs text-xango-muted">Digite o nome ou sinônimo para ver os exames disponíveis.</p>
+    )}
 
     <div
       data-aprendiz="atendimento-procedimentos-selecionados"
@@ -3635,7 +3720,7 @@ const contextoAprendizAtendimento = (() => {
             data-guia-chave={guia.chave}
             className="rounded-md border border-xango-border bg-white p-5"
           >
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
                   Guia {index + 1}
@@ -3667,7 +3752,23 @@ const contextoAprendizAtendimento = (() => {
                 {statusGuia}
               </span>
             </div>
-
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-xango-border pt-3">
+              <div className="text-xs text-xango-muted">
+                {guia.procedimentos.length} procedimento(s) · Total: <strong className="text-xango-text">{valorFinal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</strong>
+                {saldoPendente > 0 && <span className="ml-2 font-semibold text-amber-700">Pendente: {saldoPendente.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</span>}
+              </div>
+              <button
+                type="button"
+                aria-expanded={guiasExpandidas[guia.chave] ?? index === 0}
+                onClick={() => setGuiasExpandidas(atuais => ({
+                  ...atuais, [guia.chave]: !(atuais[guia.chave] ?? index === 0),
+                }))}
+                className="rounded-md border border-xango-border px-3 py-2 text-xs font-semibold text-xango-primary hover:bg-xango-background"
+              >
+                {(guiasExpandidas[guia.chave] ?? index === 0) ? "Recolher detalhes" : "Ver procedimentos e pagamentos"}
+              </button>
+            </div>
+            {(guiasExpandidas[guia.chave] ?? index === 0) && <div>
             <div className="mt-4 border-t border-xango-border pt-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-xango-muted">
                 Procedimentos
@@ -4132,6 +4233,7 @@ const contextoAprendizAtendimento = (() => {
 
               </div>
             </div>
+            </div>}
           </div>
         );
       })}
@@ -4733,7 +4835,7 @@ const contextoAprendizAtendimento = (() => {
 
         return (
           <>
-            <div className="flex items-start justify-between border-b border-xango-border pb-4">
+            <div className="sticky -top-6 z-20 -mx-6 -mt-6 flex items-start justify-between border-b border-xango-border bg-white px-6 pb-4 pt-6">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
                   Registrar pagamento
@@ -5185,7 +5287,7 @@ const contextoAprendizAtendimento = (() => {
                   setPagamentosMistos([]);
                   limparCamposParte();
                 }}
-                className="w-full rounded-md bg-xango-primary px-4 py-3 text-sm font-semibold text-white transition enabled:hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
+                className="sticky bottom-0 z-20 w-full rounded-md bg-xango-primary px-4 py-3 text-sm font-semibold text-white shadow-lg transition enabled:hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {processandoPagamento
                   ? "Registrando..."
@@ -5873,6 +5975,13 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               </div>
 
+              <BuscaMaePaciente
+                nome={novoNomeMae}
+                selecionadaId={novoMaeId}
+                onDigitar={v => { setNovoNomeMae(v); setNovoMaeId(null); }}
+                onSelecionar={p => { setNovoNomeMae(p.nome); setNovoMaeId(p.id); }}
+              />
+
               <div data-aprendiz="atendimento-novo-paciente-telefone">
                 <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
                   Telefone / WhatsApp
@@ -5905,6 +6014,33 @@ const contextoAprendizAtendimento = (() => {
                   className="mt-2 w-full rounded-md border border-xango-border px-4 py-3 text-sm outline-none focus:border-xango-primary"
                   placeholder="paciente@email.com"
                 />
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                  Sexo biológico
+                  <select value={novoSexoBiologico} onChange={(e) => setNovoSexoBiologico(e.target.value)} className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm font-normal text-xango-text">
+                    <option value="NAO_INFORMADO">Não informado</option>
+                    <option value="MASCULINO">Masculino</option>
+                    <option value="FEMININO">Feminino</option>
+                    <option value="INTERSEXO">Intersexo</option>
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-xango-muted">
+                  Gênero (opcional)
+                  <select value={novoGenero} onChange={(e) => { setNovoGenero(e.target.value); if (e.target.value !== "OUTRO") setNovoGeneroDescricao(""); }} className="mt-2 w-full rounded-md border border-xango-border bg-white px-3 py-3 text-sm font-normal text-xango-text">
+                    <option value="">Não informado</option>
+                    <option value="HOMEM">Homem</option>
+                    <option value="MULHER">Mulher</option>
+                    <option value="NAO_BINARIO">Não-binário</option>
+                    <option value="OUTRO">Outro</option>
+                    <option value="PREFERE_NAO_INFORMAR">Prefere não informar</option>
+                  </select>
+                </label>
+                {novoGenero === "OUTRO" && <label className="block text-xs font-semibold uppercase tracking-wide text-xango-muted sm:col-span-2">
+                  Descrição do gênero *
+                  <input type="text" value={novoGeneroDescricao} onChange={(e) => setNovoGeneroDescricao(e.target.value)} maxLength={100} className="mt-2 w-full rounded-md border border-xango-border px-3 py-3 text-sm font-normal text-xango-text" placeholder="Como o paciente se identifica" />
+                </label>}
               </div>
 
               <div className="border-t border-xango-border pt-5">

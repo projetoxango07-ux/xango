@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import BuscaMaePaciente from "@/components/BuscaMaePaciente";
 import {
   AlertCircle, ArrowLeft, Building2, CalendarClock, ChevronRight,
   ClipboardList, FileText, Mail, MapPin, Pencil, Phone, Plus, RefreshCw,
@@ -18,6 +19,9 @@ type PacienteBusca = { id:number; codigoPublico:string|null; nome:string; cpf:st
 type PacienteDetalhe = {
   id:number; codigoPublico:string|null; nome:string; nomeSocial:string|null; cpf:string; rg:string|null;
   telefone:string; telefoneSecundario:string|null; email:string|null; dataNascimento:string|null; nomeMae:string|null;
+  sexoBiologico:"MASCULINO"|"FEMININO"|"INTERSEXO"|"NAO_INFORMADO";
+  genero:"HOMEM"|"MULHER"|"NAO_BINARIO"|"OUTRO"|"PREFERE_NAO_INFORMAR"|null;
+  generoDescricao:string|null;
   cep:string|null; logradouro:string|null; numeroEndereco:string|null; complementoEndereco:string|null;
   bairro:string|null; cidade:string|null; uf:string|null;
   responsavelLegalEhMae:boolean; responsavelLegalNome:string|null; responsavelLegalCpf:string|null;
@@ -39,6 +43,34 @@ const TIPOS=[
 ] as const;
 const LABEL_TIPO=Object.fromEntries(TIPOS);
 
+const SEXOS_BIOLOGICOS = [
+  ["MASCULINO", "Masculino"],
+  ["FEMININO", "Feminino"],
+  ["INTERSEXO", "Intersexo"],
+  ["NAO_INFORMADO", "N\u00e3o informado"],
+] as const;
+
+const GENEROS_PACIENTE = [
+  ["", "N\u00e3o informado"],
+  ["HOMEM", "Homem"],
+  ["MULHER", "Mulher"],
+  ["NAO_BINARIO", "N\u00e3o-bin\u00e1rio"],
+  ["OUTRO", "Outro"],
+  ["PREFERE_NAO_INFORMAR", "Prefere n\u00e3o informar"],
+] as const;
+
+const LABEL_SEXO = Object.fromEntries(SEXOS_BIOLOGICOS);
+const LABEL_GENERO = Object.fromEntries(GENEROS_PACIENTE);
+
+function sexoBiologicoFormatado(v:PacienteDetalhe["sexoBiologico"]){
+  return LABEL_SEXO[v] || "N\u00e3o informado";
+}
+
+function generoFormatado(v:PacienteDetalhe["genero"], descricao:string|null){
+  if(v==="OUTRO" && descricao)return `Outro - ${descricao}`;
+  return LABEL_GENERO[v || ""] || "N\u00e3o informado";
+}
+
 function cpfFormatado(v:string){const n=(v||"").replace(/\D/g,"");return n.length===11?`${n.slice(0,3)}.${n.slice(3,6)}.${n.slice(6,9)}-${n.slice(9)}`:v||"Não informado"}
 function telefoneFormatado(v:string|null){const n=(v||"").replace(/\D/g,"");if(n.length===11)return`(${n.slice(0,2)}) ${n.slice(2,7)}-${n.slice(7)}`;if(n.length===10)return`(${n.slice(0,2)}) ${n.slice(2,6)}-${n.slice(6)}`;return v||"Não informado"}
 function dataFormatada(v:string|null){if(!v)return"Não informado";return new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"}).format(new Date(v))}
@@ -52,6 +84,7 @@ export default function PacienteDetalhePage(){
   const [paciente,setPaciente]=useState<PacienteDetalhe|null>(null); const [carregando,setCarregando]=useState(true);
   const [erro,setErro]=useState(""); const [editando,setEditando]=useState(false); const [salvando,setSalvando]=useState(false);
   const [form,setForm]=useState<Record<string,string|boolean>>({});
+  const [maeSelecionadaId,setMaeSelecionadaId]=useState<number|null>(null);
   const [modalFamilia,setModalFamilia]=useState(false); const [todosPacientes,setTodosPacientes]=useState<PacienteBusca[]>([]);
   const [buscaFamiliar,setBuscaFamiliar]=useState(""); const [familiarId,setFamiliarId]=useState(""); const [tipoVinculo,setTipoVinculo]=useState("MAE");
   const [buscandoCep,setBuscandoCep]=useState(false); const [cepMensagem,setCepMensagem]=useState("");
@@ -70,12 +103,14 @@ export default function PacienteDetalhePage(){
     setForm({
       nome:paciente.nome,nomeSocial:paciente.nomeSocial||"",cpf:paciente.cpf,rg:paciente.rg||"",telefone:paciente.telefone,
       telefoneSecundario:paciente.telefoneSecundario||"",email:paciente.email||"",dataNascimento:dataInput(paciente.dataNascimento),
-      nomeMae:paciente.nomeMae||"",cep:paciente.cep||"",logradouro:paciente.logradouro||"",numeroEndereco:paciente.numeroEndereco||"",
+      nomeMae:paciente.nomeMae||"",sexoBiologico:paciente.sexoBiologico||"NAO_INFORMADO",genero:paciente.genero||"",generoDescricao:paciente.generoDescricao||"",cep:paciente.cep||"",logradouro:paciente.logradouro||"",numeroEndereco:paciente.numeroEndereco||"",
       complementoEndereco:paciente.complementoEndereco||"",bairro:paciente.bairro||"",cidade:paciente.cidade||"",uf:paciente.uf||"",
       responsavelLegalEhMae:paciente.responsavelLegalEhMae,responsavelLegalNome:paciente.responsavelLegalNome||"",
       responsavelLegalCpf:paciente.responsavelLegalCpf||"",responsavelLegalTelefone:paciente.responsavelLegalTelefone||"",
       responsavelLegalParentesco:paciente.responsavelLegalParentesco||"",
-    });setEditando(true)
+    });
+    setMaeSelecionadaId(paciente.familiares.find(v=>v.tipo==="MAE")?.paciente.id ?? null);
+    setEditando(true)
   }
   function campo(nome:string,valor:string|boolean){setForm(f=>({...f,[nome]:valor}))}
   function menorForm(){const d=String(form.dataNascimento||"");if(!d)return false;const n=new Date(`${d}T12:00:00`),h=new Date();let idade=h.getFullYear()-n.getFullYear();const m=h.getMonth()-n.getMonth();if(m<0||(m===0&&h.getDate()<n.getDate()))idade--;return idade<18}
@@ -114,9 +149,28 @@ export default function PacienteDetalhePage(){
   }
 
   async function salvar(){
+    if (!paciente) return;
+    const maeAnterior=paciente.familiares.find(v=>v.tipo==="MAE");
+    if(maeSelecionadaId && maeAnterior && maeAnterior.paciente.id!==maeSelecionadaId){
+      setErro("Este paciente já possui vínculo com outra mãe. Confira o vínculo familiar existente antes de alterar.");
+      return;
+    }
     setSalvando(true);setErro("");
-    try{const r=await fetch(`${API}/pacientes/${pacienteId}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});const j=await r.json();if(!r.ok)throw new Error(j.erro||"Erro ao salvar.");setEditando(false);await carregarPaciente()}
-    catch(e){setErro(e instanceof Error?e.message:"Não foi possível salvar.")}finally{setSalvando(false)}
+    try{
+      const r=await fetch(`${API}/pacientes/${pacienteId}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});
+      const j=await r.json();
+      if(!r.ok)throw new Error(j.erro||"Erro ao salvar.");
+      if(maeSelecionadaId && !maeAnterior){
+        const vinculo=await fetch(`${API}/pacientes/${pacienteId}/familiares`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({pacienteId:maeSelecionadaId,tipo:"MAE"}),
+        });
+        if(!vinculo.ok)throw new Error("Cadastro salvo, mas o vínculo da mãe não pôde ser criado. Confira a seção Familiares.");
+      }
+      setEditando(false);
+      await carregarPaciente();
+    }catch(e){setErro(e instanceof Error?e.message:"Não foi possível salvar.")}
+    finally{setSalvando(false)}
   }
 
   async function abrirFamilia(){
@@ -166,7 +220,7 @@ export default function PacienteDetalhePage(){
       </div>
       <div className="mt-6 grid gap-4 border-t border-xango-border pt-5 md:grid-cols-2 xl:grid-cols-4">
         <Info titulo="CPF" valor={cpfFormatado(paciente.cpf)}/><Info titulo="RG" valor={paciente.rg||"Não informado"}/><Info titulo="Nascimento" valor={dataFormatada(paciente.dataNascimento)}/><Info titulo="Nome da mãe" valor={paciente.nomeMae||"Não informado"}/>
-        <Info titulo="Telefone" valor={telefoneFormatado(paciente.telefone)} icone={<Phone size={14}/>}/><Info titulo="Outro telefone" valor={telefoneFormatado(paciente.telefoneSecundario)} icone={<Phone size={14}/>}/><Info titulo="E-mail" valor={paciente.email||"Não informado"} icone={<Mail size={14}/>}/>
+        <Info titulo={"Sexo biol\u00f3gico"} valor={sexoBiologicoFormatado(paciente.sexoBiologico)}/><Info titulo={"G\u00eanero"} valor={generoFormatado(paciente.genero,paciente.generoDescricao)}/><Info titulo="Telefone" valor={telefoneFormatado(paciente.telefone)} icone={<Phone size={14}/>}/><Info titulo="Outro telefone" valor={telefoneFormatado(paciente.telefoneSecundario)} icone={<Phone size={14}/>}/><Info titulo="E-mail" valor={paciente.email||"Não informado"} icone={<Mail size={14}/>}/>
       </div>
       <div className="mt-5 border-t border-xango-border pt-5"><p className="mb-3 text-xs font-semibold uppercase tracking-wide text-xango-muted">Endereço</p><div className="flex gap-2 text-sm text-xango-text"><MapPin size={16} className="mt-0.5 shrink-0 text-xango-muted"/><span>{paciente.logradouro?`${paciente.logradouro}, ${paciente.numeroEndereco||"s/n"}${paciente.complementoEndereco?` - ${paciente.complementoEndereco}`:""} • ${paciente.bairro||""} • ${paciente.cidade||""}/${paciente.uf||""} • CEP ${paciente.cep||"não informado"}`:"Não informado"}</span></div></div>
       {paciente.cadastro.menor&&<div className="mt-5 border-t border-xango-border pt-5"><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-xango-muted">Responsável legal</p><p className="text-sm text-xango-text">{paciente.responsavelLegalEhMae?`${paciente.nomeMae||"Mãe"} — mãe e responsável legal`:`${paciente.responsavelLegalNome||"Não informado"}${paciente.responsavelLegalParentesco?` — ${paciente.responsavelLegalParentesco}`:""}`}</p></div>}
@@ -184,7 +238,14 @@ export default function PacienteDetalhePage(){
     <section className="mt-4 overflow-hidden rounded-lg border border-xango-border bg-white shadow-sm"><div className="border-b border-xango-border px-5 py-4"><h3 className="font-semibold text-xango-text">Histórico de atendimentos</h3></div>{paciente.atendimentos.length===0?<div className="px-5 py-10 text-center text-sm text-xango-muted">Este paciente ainda não possui atendimentos.</div>:<div className="divide-y divide-xango-border">{paciente.atendimentos.map(a=><button key={a.id} onClick={()=>router.push(`/atendimentos/${a.id}?modo=revisao`)} className="w-full px-5 py-5 text-left hover:bg-xango-background/60"><div className="flex justify-between"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{a.codigoPublico}</p><span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClass(a.status)}`}>{a.status}</span><span className="text-xs text-xango-muted">{dataFormatada(a.criadoEm)}</span></div><ChevronRight size={18}/></div><div className="mt-3 grid gap-2">{a.guias.map(g=><div key={g.id} className="rounded-md border border-xango-border bg-xango-background/40 px-4 py-3"><div className="flex justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><FileText size={14}/><span className="text-xs font-semibold text-xango-primary">{g.codigoPublico}</span><span className="text-xs text-xango-muted">{g.clinica.nome}</span></div><span className="text-xs font-semibold">{moeda(g.valorFinal)}</span></div></div>)}</div></button>)}</div>}</section>
 
     {editando&&<Modal titulo="Editar cadastro" fechar={()=>setEditando(false)}>
-      <div className="grid gap-4 md:grid-cols-2"><Campo label="Nome completo *" value={String(form.nome||"")} onChange={v=>campo("nome",v)}/><Campo label="Nome social" value={String(form.nomeSocial||"")} onChange={v=>campo("nomeSocial",v)}/><Campo label="CPF *" value={String(form.cpf||"")} onChange={v=>campo("cpf",v)}/><Campo label="RG *" value={String(form.rg||"")} onChange={v=>campo("rg",v)}/><Campo label="Data de nascimento *" type="date" value={String(form.dataNascimento||"")} onChange={v=>campo("dataNascimento",v)}/><Campo label="Nome da mãe *" value={String(form.nomeMae||"")} onChange={v=>campo("nomeMae",v)}/><Campo label="Telefone *" value={String(form.telefone||"")} onChange={v=>campo("telefone",v)}/><Campo label="Outro telefone" value={String(form.telefoneSecundario||"")} onChange={v=>campo("telefoneSecundario",v)}/><Campo label="E-mail" value={String(form.email||"")} onChange={v=>campo("email",v)}/></div>
+      {erro&&<p className="mb-3 rounded-md bg-red-50 p-3 text-sm text-red-700">{erro}</p>}
+      <div className="grid gap-4 md:grid-cols-2"><Campo label="Nome completo *" value={String(form.nome||"")} onChange={v=>campo("nome",v)}/><Campo label="Nome social" value={String(form.nomeSocial||"")} onChange={v=>campo("nomeSocial",v)}/><Campo label="CPF *" value={String(form.cpf||"")} onChange={v=>campo("cpf",v)}/><Campo label="RG *" value={String(form.rg||"")} onChange={v=>campo("rg",v)}/><Campo label="Data de nascimento *" type="date" value={String(form.dataNascimento||"")} onChange={v=>campo("dataNascimento",v)}/><BuscaMaePaciente
+        nome={String(form.nomeMae||"")}
+        selecionadaId={maeSelecionadaId}
+        pacienteId={paciente.id}
+        onDigitar={v=>{campo("nomeMae",v);setMaeSelecionadaId(null)}}
+        onSelecionar={p=>{campo("nomeMae",p.nome);setMaeSelecionadaId(p.id)}}
+      /><SelectCampo label={"Sexo biol\u00f3gico"} value={String(form.sexoBiologico||"NAO_INFORMADO")} onChange={v=>campo("sexoBiologico",v)} options={SEXOS_BIOLOGICOS}/><SelectCampo label={"G\u00eanero"} value={String(form.genero||"")} onChange={v=>campo("genero",v)} options={GENEROS_PACIENTE}/>{String(form.genero||"")==="OUTRO"&&<Campo label={"Descri\u00e7\u00e3o do g\u00eanero *"} value={String(form.generoDescricao||"")} onChange={v=>campo("generoDescricao",v)}/>}<Campo label="Telefone *" value={String(form.telefone||"")} onChange={v=>campo("telefone",v)}/><Campo label="Outro telefone" value={String(form.telefoneSecundario||"")} onChange={v=>campo("telefoneSecundario",v)}/><Campo label="E-mail" value={String(form.email||"")} onChange={v=>campo("email",v)}/></div>
       <h4 className="mt-6 border-t border-xango-border pt-5 font-semibold">Endereço obrigatório</h4><div className="mt-3 grid gap-4 md:grid-cols-2"><div><Campo label="CEP *" value={String(form.cep||"")} onChange={v=>void buscarCep(v)} placeholder="00000000"/>{buscandoCep&&<p className="mt-1 text-xs text-xango-muted">Buscando CEP...</p>}{!buscandoCep&&cepMensagem&&<p className="mt-1 text-xs text-xango-muted">{cepMensagem}</p>}</div><Campo label="Logradouro *" value={String(form.logradouro||"")} onChange={v=>campo("logradouro",v)}/><Campo label="Número *" value={String(form.numeroEndereco||"")} onChange={v=>campo("numeroEndereco",v)}/><Campo label="Complemento" value={String(form.complementoEndereco||"")} onChange={v=>campo("complementoEndereco",v)}/><Campo label="Bairro *" value={String(form.bairro||"")} onChange={v=>campo("bairro",v)}/><Campo label="Cidade *" value={String(form.cidade||"")} onChange={v=>campo("cidade",v)}/><Campo label="UF *" value={String(form.uf||"")} onChange={v=>campo("uf",v)}/></div>
       {menorForm()&&<div className="mt-6 border-t border-xango-border pt-5"><h4 className="font-semibold">Responsável legal *</h4><label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(form.responsavelLegalEhMae)} onChange={e=>campo("responsavelLegalEhMae",e.target.checked)}/>Responsável legal é a mãe</label>{!form.responsavelLegalEhMae&&<div className="mt-4 grid gap-4 md:grid-cols-2"><Campo label="Nome do responsável *" value={String(form.responsavelLegalNome||"")} onChange={v=>campo("responsavelLegalNome",v)}/><Campo label="CPF do responsável *" value={String(form.responsavelLegalCpf||"")} onChange={v=>campo("responsavelLegalCpf",v)}/><Campo label="Telefone do responsável *" value={String(form.responsavelLegalTelefone||"")} onChange={v=>campo("responsavelLegalTelefone",v)}/><Campo label="Parentesco" value={String(form.responsavelLegalParentesco||"")} onChange={v=>campo("responsavelLegalParentesco",v)}/></div>}</div>}
       <div className="mt-6 flex justify-end gap-2"><button onClick={()=>setEditando(false)} className="rounded-md border px-4 py-2 text-sm">Cancelar</button><button disabled={salvando} onClick={()=>void salvar()} className="rounded-md bg-xango-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{salvando?"Salvando...":"Salvar cadastro"}</button></div>
@@ -204,4 +265,5 @@ function Badge({children}:{children:React.ReactNode}){return <span className="ro
 function Info({titulo,valor,icone}:{titulo:string;valor:string;icone?:React.ReactNode}){return <div><p className="flex items-center gap-1 text-xs font-medium text-xango-muted">{icone}{titulo}</p><p className="mt-1 text-sm font-medium text-xango-text">{valor}</p></div>}
 function Resumo({titulo,valor,icone,alerta=false}:{titulo:string;valor:string;icone:React.ReactNode;alerta?:boolean}){return <div className={`rounded-lg border bg-white p-4 shadow-sm ${alerta?"border-amber-300":"border-xango-border"}`}><div className="flex items-center gap-2 text-xango-muted">{icone}<span className="text-xs font-medium">{titulo}</span></div><p className="mt-2 text-xl font-semibold text-xango-text">{valor}</p></div>}
 function Campo({label,value,onChange,type="text",placeholder}:{label:string;value:string;onChange:(v:string)=>void;type?:string;placeholder?:string}){return <label className="block"><span className="text-xs font-semibold text-xango-muted">{label}</span><input type={type} value={value} placeholder={placeholder} onChange={e=>onChange(e.target.value)} className="mt-1 w-full rounded-md border border-xango-border bg-white px-3 py-2 text-sm outline-none focus:border-xango-primary"/></label>}
+function SelectCampo({label,value,onChange,options}:{label:string;value:string;onChange:(v:string)=>void;options:readonly (readonly [string,string])[]}){return <label className="block"><span className="text-xs font-semibold text-xango-muted">{label}</span><select value={value} onChange={e=>onChange(e.target.value)} className="mt-1 w-full rounded-md border border-xango-border bg-white px-3 py-2 text-sm outline-none focus:border-xango-primary">{options.map(([v,l])=><option key={v||"VAZIO"} value={v}>{l}</option>)}</select></label>}
 function Modal({titulo,fechar,children}:{titulo:string;fechar:()=>void;children:React.ReactNode}){return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-xl bg-white shadow-xl"><div className="sticky top-0 z-10 flex items-center justify-between border-b border-xango-border bg-white px-5 py-4"><h3 className="text-lg font-semibold text-xango-text">{titulo}</h3><button onClick={fechar} className="rounded-md p-1 text-xango-muted hover:bg-xango-background"><X size={20}/></button></div><div className="p-5">{children}</div></div></div>}

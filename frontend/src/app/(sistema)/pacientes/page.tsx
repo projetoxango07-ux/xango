@@ -332,16 +332,7 @@ export default function PacientesPage() {
   function abrirPaciente(
     paciente: PacienteResumo
   ) {
-    if (paciente.ultimoAtendimento) {
-      router.push(
-        `/atendimentos/${paciente.ultimoAtendimento.id}?modo=revisao`
-      );
-      return;
-    }
-
-    router.push(
-      `/atendimentos/novo?pacienteId=${paciente.id}`
-    );
+    router.push(`/pacientes/${paciente.id}`);
   }
 
   const primeiroResultado =

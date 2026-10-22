@@ -4914,6 +4914,22 @@ app.post("/clinicas", async (req, res) => {
   }
 });
 
+// V1.1: alteração isolada do status, sem sobrescrever dados cadastrais.
+app.patch("/clinicas/:id/status", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ erro: "Clínica inválida." });
+    if (typeof req.body.ativo !== "boolean") return res.status(400).json({ erro: "Informe um status válido." });
+    const atual = await prisma.clinica.findUnique({ where: { id }, select: { id: true } });
+    if (!atual) return res.status(404).json({ erro: "Clínica não encontrada." });
+    const clinica = await prisma.clinica.update({ where: { id }, data: { ativo: req.body.ativo }, select: { id: true, nome: true, ativo: true } });
+    return res.json(clinica);
+  } catch (erro) {
+    console.error("Erro ao alterar status da clínica:", erro);
+    return res.status(500).json({ erro: "Não foi possível alterar o status da clínica." });
+  }
+});
+
 app.patch("/clinicas/:id", async (req, res) => {
   try {
     const clinicaId = Number(req.params.id);
@@ -8220,6 +8236,33 @@ app.get("/pacientes/busca", async (req, res) => {
   }
 });
 
+// V1.1: lista completa de aniversariantes para mensagens individuais.
+// Somente dados mínimos; nenhuma mensagem é enviada automaticamente.
+app.get("/pacientes/aniversariantes-hoje", async (_req, res) => {
+  try {
+    const agora = new Date();
+    const partes = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Sao_Paulo", month: "numeric", day: "numeric",
+    }).formatToParts(agora);
+    const mes = Number(partes.find((parte) => parte.type === "month")?.value);
+    const dia = Number(partes.find((parte) => parte.type === "day")?.value);
+    const pacientes = await prisma.paciente.findMany({
+      where: { dataNascimento: { not: null } },
+      select: { id: true, nome: true, nomeSocial: true, telefone: true, dataNascimento: true },
+      orderBy: { nome: "asc" },
+    });
+    const aniversariantes = pacientes.filter((paciente) => {
+      if (!paciente.dataNascimento) return false;
+      const data = new Date(paciente.dataNascimento);
+      return data.getUTCMonth() + 1 === mes && data.getUTCDate() === dia;
+    }).map(({ id, nome, nomeSocial, telefone }) => ({ id, nome: nomeSocial || nome, telefone }));
+    return res.json({ data: agora.toISOString(), aniversariantes });
+  } catch (erro) {
+    console.error("Erro ao consultar aniversariantes:", erro);
+    return res.status(500).json({ erro: "Não foi possível carregar aniversariantes." });
+  }
+});
+
 app.get("/pacientes/:id", async (req, res) => {
   try {
     const pacienteId = Number(req.params.id);
@@ -8275,7 +8318,7 @@ app.get("/pacientes/:id", async (req, res) => {
       responsavelLegalEhMae: paciente.responsavelLegalEhMae, responsavelLegalNome: paciente.responsavelLegalNome,
       responsavelLegalCpf: paciente.responsavelLegalCpf, responsavelLegalTelefone: paciente.responsavelLegalTelefone,
       responsavelLegalParentesco: paciente.responsavelLegalParentesco,
-      beneficioAtivo: paciente.beneficioAtivo, empresa: paciente.empresa ? { id: paciente.empresa.id, nome: paciente.empresa.nome } : null,
+      beneficioAtivo: paciente.beneficioAtivo, empresa: paciente.empresa ? { id: paciente.empresa.id, nome: paciente.empresa.nome, percentualBeneficio: paciente.empresa.percentualBeneficio } : null,
       criadoPor: paciente.criadoPor, criadoEm: paciente.criadoEm, atualizadoEm: paciente.atualizadoEm,
       cadastro: cadastroPaciente(paciente),
       familiares: paciente.vinculosComoOrigem.map((v) => ({ id: v.id, tipo: v.tipo, removivel: v.removivel, paciente: { id: v.pacienteDestino.id, codigoPublico: v.pacienteDestino.codigoPublico, nome: v.pacienteDestino.nome, nomeSocial: v.pacienteDestino.nomeSocial, cpf: v.pacienteDestino.cpf } })),
@@ -8400,6 +8443,7 @@ app.post("/pacientes", async (req, res) => {
       telefone,
       email,
       dataNascimento,
+      nomeMae,
       sexoBiologico,
       genero,
       generoDescricao,
@@ -8445,6 +8489,7 @@ app.post("/pacientes", async (req, res) => {
     if (pacienteExistente) return res.status(409).json({ erro: "Já existe um paciente cadastrado com este CPF." });
     const codigoPublico = await gerarCodigoPublicoUnico("PAC");
     const paciente = await prisma.paciente.create({ data: { codigoPublico, nome: nome.trim().replace(/\s+/g," ").toUpperCase(), cpf: cpfLimpo, telefone: telefoneLimpo, email: email?.trim() ? email.trim().toLowerCase() : null, dataNascimento: dataNascimento ? new Date(`${dataNascimento}T12:00:00`) : null,
+      nomeMae: typeof nomeMae === "string" && nomeMae.trim() ? nomeMae.trim().toUpperCase() : null,
       sexoBiologico: (sexoBiologicoNormalizado || "NAO_INFORMADO") as any,
       genero: generoNormalizado ? (generoNormalizado as any) : null,
       generoDescricao: generoNormalizado === "OUTRO" ? generoDescricaoNormalizada : null,

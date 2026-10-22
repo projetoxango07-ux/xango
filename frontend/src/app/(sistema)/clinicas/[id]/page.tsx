@@ -255,6 +255,7 @@ export default function ClinicaPage() {
   const [clinica, setClinica] = useState<Clinica | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
+  const [alterandoStatus, setAlterandoStatus] = useState(false);
   const [editandoPrecos, setEditandoPrecos] = useState(false);
   const [salvandoPrecoId, setSalvandoPrecoId] = useState<number | null>(null);
   const [buscaPreco, setBuscaPreco] = useState("");
@@ -522,6 +523,29 @@ export default function ClinicaPage() {
     );
   }
 
+  async function alterarStatusClinica() {
+    if (!clinica) return;
+    const ativo = !clinica.ativo;
+    if (!window.confirm(ativo
+      ? `Reativar a clínica ${clinica.nome}? O histórico e os vínculos serão preservados.`
+      : `Inativar a clínica ${clinica.nome}? O histórico será preservado.`)) return;
+    try {
+      setAlterandoStatus(true);
+      setErro("");
+      const resposta = await fetch(`${API_URL}/clinicas/${clinica.id}/status`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ativo }),
+      });
+      const resultado = await resposta.json();
+      if (!resposta.ok) throw new Error(resultado.erro || "Não foi possível alterar o status da clínica.");
+      setClinica((atual) => atual ? { ...atual, ativo: resultado.ativo } : atual);
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao alterar status da clínica.");
+    } finally {
+      setAlterandoStatus(false);
+    }
+  }
+
   const unidadeAtivas = clinica.unidades.filter((u) => u.ativo);
   const precosAtivos = clinica.precos.filter((p) => p.ativo);
 
@@ -561,6 +585,10 @@ export default function ClinicaPage() {
           </div>
         </div>
 
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={alterandoStatus} onClick={() => void alterarStatusClinica()} className={`rounded-md border px-4 py-2.5 text-sm font-semibold disabled:opacity-50 ${clinica.ativo ? "border-amber-200 text-amber-700 hover:bg-amber-50" : "border-emerald-200 text-emerald-700 hover:bg-emerald-50"}`}>
+            {alterandoStatus ? "Atualizando..." : clinica.ativo ? "Inativar clínica" : "Reativar clínica"}
+          </button>
         <button
           type="button"
           onClick={() => router.push(`/clinicas/${clinica.id}/editar`)}
@@ -569,6 +597,7 @@ export default function ClinicaPage() {
           <Pencil size={16} />
           Editar dados
         </button>
+        </div>
       </div>
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">

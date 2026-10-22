@@ -628,8 +628,8 @@ const atendimentosFiltrados = useMemo(() => {
             className="fixed inset-0 z-40 bg-black/20"
           />
 
-          <aside className="fixed right-0 top-0 z-50 h-screen w-full max-w-md overflow-y-auto bg-white p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
+          <aside className="fixed right-0 top-0 z-50 flex h-screen w-full max-w-md flex-col overflow-hidden bg-white p-5 shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-xango-border pb-4">
               <div>
                 <p className="text-sm text-xango-muted">
                   Atendimento{" "}
@@ -655,7 +655,7 @@ const atendimentosFiltrados = useMemo(() => {
               </button>
             </div>
 
-            <div className="mt-6 space-y-5">
+            <div className="mt-4 min-h-0 flex-1 space-y-5 overflow-y-auto pr-1 pb-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-xango-muted">
@@ -698,7 +698,9 @@ const atendimentosFiltrados = useMemo(() => {
                   Procedimentos
                 </p>
 
-                <div className="mt-2 space-y-2">
+                <details className="mt-2 rounded-md border border-xango-border bg-xango-background/40 p-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-xango-primary">Ver procedimentos (clique para expandir)</summary>
+                <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
                   {selecionado.guias
                     .filter(
                       (guia) => guia.status !== "CANCELADA"
@@ -743,6 +745,7 @@ const atendimentosFiltrados = useMemo(() => {
                     </div>
                   )}
                 </div>
+                </details>
               </div>
 
               <div>
@@ -750,7 +753,9 @@ const atendimentosFiltrados = useMemo(() => {
                   Agendamento
                 </p>
 
-                <div className="mt-2 space-y-2">
+                <details className="mt-2 rounded-md border border-xango-border bg-xango-background/40 p-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-xango-primary">Ver agendamentos</summary>
+                <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
                   {selecionado.guias
                     .filter(
                       (guia) => guia.status !== "CANCELADA"
@@ -798,6 +803,7 @@ const atendimentosFiltrados = useMemo(() => {
                       })
                   )}
                 </div>
+                </details>
               </div>
 
               <div>
@@ -844,6 +850,8 @@ const atendimentosFiltrados = useMemo(() => {
                 </div>
               </div>
 
+            </div>
+            <div className="shrink-0 border-t border-xango-border bg-white pt-4">
               <div className="border-t border-xango-border pt-5">
                 <button
                   type="button"
