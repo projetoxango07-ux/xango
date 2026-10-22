@@ -65,6 +65,8 @@ type GuiaApi = {
     id: number;
     status: string;
     valorPaciente: string | number;
+    quantidade?: number;
+    detalhamento?: string | null;
     tipoAgendamento: "HORARIO" | "ORDEM_CHEGADA" | null;
     dataAgendamento: string | null;
     horarioAgendamento: string | null;
@@ -460,8 +462,9 @@ export default function ImprimirGuiaPage() {
                 >
                   <div className="min-w-0">
                     <p className="font-semibold leading-5">
-                      {item.procedimento.nome}
+                      {item.procedimento.nome}{Number(item.quantidade || 1) > 1 ? ` (x${item.quantidade})` : ""}
                     </p>
+                    {item.detalhamento && <p className="text-[10px] text-slate-600">{item.detalhamento.replace(/[\n;]+/g, ", ")}</p>}
 
                     {item.procedimento.categoria && (
                       <p className="text-[10px] text-slate-500">

@@ -78,6 +78,7 @@ type Procedimento = {
   categoria: string | null;
   aliases: string[];
   codigoTuss: string | null;
+  multiplicidade?: "UNICO" | "QUANTIDADE" | "DETALHADO";
   ativo: boolean;
   precos: PrecoClinica[];
   precosUnidade: PrecoUnidade[];
@@ -88,6 +89,10 @@ type ItemSelecionado = {
   procedimentoId: number;
   clinicaId: number | null;
   unidadeClinicaId: number | null;
+  quantidade: number;
+  detalhamento: string;
+  quantidadeOriginal?: number;
+  detalhamentoOriginal?: string;
 
   valorCongeladoPaciente?: number;
   valorCongeladoRepasse?: number;
@@ -120,6 +125,8 @@ type OrcamentoApi = {
     unidadeClinicaNome: string | null;
     valorPaciente: number;
     valorRepasse: number;
+    quantidade?: number;
+    detalhamento?: string | null;
     convertido: boolean;
   }>;
 };
@@ -279,7 +286,9 @@ function itemMantemConfiguracaoOriginal(item: ItemSelecionado) {
     item.id !== undefined &&
     item.procedimentoOriginalId === item.procedimentoId &&
     item.clinicaOriginalId === item.clinicaId &&
-    item.unidadeOriginalId === item.unidadeClinicaId
+    item.unidadeOriginalId === item.unidadeClinicaId &&
+    item.quantidadeOriginal === item.quantidade &&
+    item.detalhamentoOriginal === item.detalhamento
   );
 }
 
@@ -298,8 +307,8 @@ function precoExibido(
     item.valorCongeladoRepasse !== undefined
   ) {
     return {
-      valorPaciente: item.valorCongeladoPaciente,
-      valorRepasse: item.valorCongeladoRepasse,
+      valorPaciente: item.valorCongeladoPaciente / Math.max(1, item.quantidade),
+      valorRepasse: item.valorCongeladoRepasse / Math.max(1, item.quantidade),
       especificoUnidade: false,
       congelado: true,
     };
@@ -445,6 +454,8 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
               setItens([
                 {
                   procedimentoId: procedimento.id,
+                  quantidade: 1,
+                  detalhamento: "",
                   clinicaId: clinica?.clinicaId || null,
                   unidadeClinicaId: unidade?.id || null,
                 },
@@ -489,6 +500,8 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
 
               itensDoModelo.push({
                 procedimentoId: procedimento.id,
+                quantidade: 1,
+                detalhamento: "",
                 clinicaId: escolhida?.clinicaId || null,
                 unidadeClinicaId:
                   unidadePreferida?.id || (unidades.length === 1 ? unidades[0].id : null),
@@ -579,6 +592,10 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
               procedimentoId: item.procedimentoId,
               clinicaId: item.clinicaId,
               unidadeClinicaId: item.unidadeClinicaId,
+              quantidade: item.quantidade || 1,
+              detalhamento: item.detalhamento || "",
+              quantidadeOriginal: item.quantidade || 1,
+              detalhamentoOriginal: item.detalhamento || "",
               valorCongeladoPaciente: modoEdicao
                 ? Number(item.valorPaciente)
                 : undefined,
@@ -745,7 +762,7 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
     () =>
       itensDetalhados.reduce(
         (total, registro) =>
-          total + (registro.preco?.valorPaciente || 0),
+          total + (registro.preco?.valorPaciente || 0) * registro.item.quantidade,
         0
       ),
     [itensDetalhados]
@@ -760,6 +777,8 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
       ...atuais,
       {
         procedimentoId: procedimento.id,
+        quantidade: 1,
+        detalhamento: "",
         clinicaId: unicaClinica?.clinicaId || null,
         unidadeClinicaId: unidades.length === 1 ? unidades[0].id : null,
       },
@@ -838,6 +857,18 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
     }
 
     for (const registro of itensDetalhados) {
+      const qtd = registro.item.quantidade;
+      if (!Number.isInteger(qtd) || qtd < 1 || qtd > 100) {
+        setErroSalvar(`Quantidade inválida de ${registro.procedimento.nome}.`); return;
+      }
+      const regra = registro.procedimento.multiplicidade || "UNICO";
+      if (regra === "UNICO" && qtd !== 1) { setErroSalvar(`O procedimento ${registro.procedimento.nome} é único.`); return; }
+      if (regra === "DETALHADO") {
+        const regioes = registro.item.detalhamento.split(/[\n;]+/).map(v => v.trim()).filter(Boolean);
+        if (!regioes.length || regioes.length !== qtd || new Set(regioes.map(v => v.toLocaleUpperCase("pt-BR"))).size !== regioes.length) {
+          setErroSalvar(`Informe uma região diferente por linha para ${registro.procedimento.nome}.`); return;
+        }
+      }
       if (!registro.item.clinicaId) {
         setErroSalvar(
           `Selecione a clínica de ${registro.procedimento.nome}.`
@@ -895,6 +926,8 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
             procedimentoId: item.procedimentoId,
             clinicaId: item.clinicaId,
             unidadeClinicaId: item.unidadeClinicaId,
+            quantidade: item.quantidade,
+            detalhamento: item.detalhamento || null,
           })),
         }),
       });
@@ -1348,6 +1381,25 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
                         ) : null}
                       </div>
 
+                      {procedimento.multiplicidade && procedimento.multiplicidade !== "UNICO" && (
+                        <div className="mt-4 rounded-lg border border-xango-border p-3">
+                          {procedimento.multiplicidade === "QUANTIDADE" ? (
+                            <label className="flex items-center justify-between text-sm font-semibold">Quantidade
+                              <input aria-label={`Quantidade de ${procedimento.nome}`} type="number" min={1} max={100} step={1} value={item.quantidade}
+                                onChange={e => setItens(atuais => atuais.map(atual => atual.procedimentoId === item.procedimentoId ? { ...atual, quantidade: Math.min(100, Math.max(1, Number(e.target.value) || 1)) } : atual))}
+                                className="w-20 rounded border border-xango-border px-2 py-1" />
+                            </label>
+                          ) : (
+                            <label className="block text-sm font-semibold">Lados/regiões — um por linha
+                              <textarea value={item.detalhamento} rows={2} placeholder={"Pé esquerdo\nPé direito"}
+                                onChange={e => { const detalhes = e.target.value; const qtd = Math.max(1, detalhes.split(/[\n;]+/).map(v => v.trim()).filter(Boolean).length); setItens(atuais => atuais.map(atual => atual.procedimentoId === item.procedimentoId ? { ...atual, detalhamento: detalhes, quantidade: qtd } : atual)); }}
+                                className="mt-1 w-full rounded border border-xango-border p-2 text-sm" />
+                              <span className="text-xs font-normal text-xango-muted">{item.quantidade} unidade(s)</span>
+                            </label>
+                          )}
+                        </div>
+                      )}
+
                       <div className="mt-4 flex flex-wrap items-end justify-between gap-3 rounded-lg bg-xango-background p-4">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
@@ -1365,7 +1417,7 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
                         </div>
 
                         <p className="text-xl font-bold text-xango-text">
-                          {preco ? moeda(preco.valorPaciente) : "—"}
+                          {preco ? moeda(Math.round(preco.valorPaciente * item.quantidade * 100) / 100) : "—"}
                         </p>
                       </div>
                     </div>

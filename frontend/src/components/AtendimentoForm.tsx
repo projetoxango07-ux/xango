@@ -66,6 +66,7 @@ type ProcedimentoApi = {
   nome: string;
   categoria: string | null;
   aliases?: string[];
+  multiplicidade?: "UNICO" | "QUANTIDADE" | "DETALHADO";
   precos: {
     clinicaId: number;
     valorPaciente: string | number;
@@ -93,9 +94,19 @@ type Procedimento = {
   nome: string;
   categoria: string;
   aliases: string[];
+  multiplicidade: "UNICO" | "QUANTIDADE" | "DETALHADO";
+  quantidade: number;
+  detalhamento: string;
   valor: number;
   repasse: number;
 };
+
+function quantidadeProcedimento(p: Procedimento): number {
+  return p.multiplicidade === "UNICO" ? 1 : Math.max(1, Math.min(100, p.quantidade || 1));
+}
+function totalPacienteProcedimento(p: Procedimento) { return Math.round(p.valor * quantidadeProcedimento(p) * 100) / 100; }
+function totalRepasseProcedimento(p: Procedimento) { return Math.round(p.repasse * quantidadeProcedimento(p) * 100) / 100; }
+function linhasDetalhamento(valor: string) { return valor.split(/\n|;/).map(v => v.trim()).filter(Boolean); }
 
 type UnidadeClinica = {
   id: number;
@@ -139,6 +150,8 @@ type AtendimentoExistenteApi = {
       status: string;
       valorPaciente: string | number;
       valorRepasse: string | number;
+      quantidade?: number;
+      detalhamento?: string | null;
       tipoAgendamento: "HORARIO" | "ORDEM_CHEGADA" | null;
       dataAgendamento: string | null;
       horarioAgendamento: string | null;
@@ -146,6 +159,7 @@ type AtendimentoExistenteApi = {
         id: number;
         nome: string;
         categoria: string | null;
+        multiplicidade?: "UNICO" | "QUANTIDADE" | "DETALHADO";
       };
     }[];
   }[];
@@ -635,6 +649,9 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
               aliases: Array.isArray(procedimento.aliases)
                 ? procedimento.aliases
                 : [],
+              multiplicidade: procedimento.multiplicidade || "UNICO",
+              quantidade: 1,
+              detalhamento: "",
               valor: primeiroPreco ? Number(primeiroPreco.valorPaciente) : 0,
               repasse: primeiroPreco ? Number(primeiroPreco.valorRepasse) : 0,
             };
@@ -799,8 +816,11 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
                 nome: item.procedimento.nome,
                 categoria: item.procedimento.categoria || "Sem categoria",
                 aliases: [],
-                valor: Number(item.valorPaciente),
-                repasse: Number(item.valorRepasse),
+                multiplicidade: item.procedimento.multiplicidade || "UNICO",
+                quantidade: Math.max(1, Number(item.quantidade || 1)),
+                detalhamento: item.detalhamento || "",
+                valor: Number(item.valorPaciente) / Math.max(1, Number(item.quantidade || 1)),
+                repasse: Number(item.valorRepasse) / Math.max(1, Number(item.quantidade || 1)),
               });
             }
 
@@ -1541,7 +1561,7 @@ const etapaMaximaLiberada = useMemo(() => {
 
     const subtotal = procedimentosAtivos.reduce(
       (total, procedimento) =>
-        total + procedimento.valor,
+        total + totalPacienteProcedimento(procedimento),
       0
     );
 
@@ -1658,12 +1678,12 @@ const contextoAprendizAtendimento = (() => {
     );
 
     const subtotal = procedimentosAtivos.reduce(
-      (total, procedimento) => total + procedimento.valor,
+      (total, procedimento) => total + totalPacienteProcedimento(procedimento),
       0
     );
 
     const repasseTotal = procedimentosAtivos.reduce(
-      (total, procedimento) => total + procedimento.repasse,
+      (total, procedimento) => total + totalRepasseProcedimento(procedimento),
       0
     );
 
@@ -2009,6 +2029,11 @@ const contextoAprendizAtendimento = (() => {
       return;
     }
 
+    const incompleto = procedimentosSelecionados.find(p => p.multiplicidade === "DETALHADO" && (
+      linhasDetalhamento(p.detalhamento).length === 0 ||
+      new Set(linhasDetalhamento(p.detalhamento).map(v => v.toLocaleUpperCase("pt-BR"))).size !== linhasDetalhamento(p.detalhamento).length
+    ));
+    if (incompleto) { alert(`Detalhamento inválido em ${incompleto.nome}.`); return; }
     try {
       const guiasParaSalvar = guias.map((guia) => {
         const procedimentosAtivos = guia.procedimentos.filter(
@@ -2016,12 +2041,12 @@ const contextoAprendizAtendimento = (() => {
         );
 
         const subtotal = procedimentosAtivos.reduce(
-          (total, procedimento) => total + procedimento.valor,
+          (total, procedimento) => total + totalPacienteProcedimento(procedimento),
           0
         );
 
         const repasseTotal = procedimentosAtivos.reduce(
-          (total, procedimento) => total + procedimento.repasse,
+          (total, procedimento) => total + totalRepasseProcedimento(procedimento),
           0
         );
 
@@ -2120,8 +2145,10 @@ const contextoAprendizAtendimento = (() => {
           valorEstornado,
           itens: guia.procedimentos.map((procedimento) => ({
             procedimentoId: procedimento.id,
-            valorPaciente: procedimento.valor,
-            valorRepasse: procedimento.repasse,
+            quantidade: quantidadeProcedimento(procedimento),
+            detalhamento: procedimento.multiplicidade === "DETALHADO" ? procedimento.detalhamento.trim() : null,
+            valorPaciente: totalPacienteProcedimento(procedimento),
+            valorRepasse: totalRepasseProcedimento(procedimento),
             tipoAgendamento: guia.tipoAgendamento,
             dataAgendamento: guia.data || null,
             horarioAgendamento: guia.horario || null,
@@ -3018,6 +3045,39 @@ const contextoAprendizAtendimento = (() => {
       )}
     </div>
 
+    {procedimentosSelecionados.length > 0 && (
+      <div className="mt-3 space-y-3">
+        {procedimentosSelecionados.map((p) => (
+          <div key={p.id} className="rounded-md border border-xango-border bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-xango-text">{p.nome}</p>
+                <p className="text-xs text-xango-muted">{p.multiplicidade === "QUANTIDADE" ? "Quantidade permitida" : p.multiplicidade === "DETALHADO" ? "Descrever cada região/lado em uma linha" : "Procedimento único"}</p>
+              </div>
+              {p.multiplicidade === "QUANTIDADE" && (
+                <label className="text-xs text-xango-muted">Quantidade
+                  <input type="number" min={1} max={100} step={1} value={p.quantidade}
+                    onChange={(e) => { const v = Number(e.target.value); setProcedimentosSelecionados(atuais => atuais.map(item => item.id === p.id ? { ...item, quantidade: Number.isInteger(v) ? Math.min(100, Math.max(1, v)) : 1 } : item)); setGuiasSalvas({}); }}
+                    className="ml-2 w-20 rounded border border-xango-border p-2 text-sm" />
+                </label>
+              )}
+              <button type="button" onClick={() => setProcedimentosSelecionados(atuais => atuais.filter(item => item.id !== p.id))} className="text-xs font-semibold text-red-600">Remover</button>
+            </div>
+            {p.multiplicidade === "DETALHADO" && (
+              <div className="mt-3">
+                <label className="block text-xs font-semibold text-xango-muted">Lados / regiões (uma por linha, sem repetir)</label>
+                <textarea rows={2} value={p.detalhamento} placeholder={"Pé esquerdo\nPé direito"}
+                  onChange={(e) => { const valor = e.target.value; setProcedimentosSelecionados(atuais => atuais.map(item => item.id === p.id ? { ...item, detalhamento: valor, quantidade: Math.max(1, linhasDetalhamento(valor).length) } : item)); setGuiasSalvas({}); }}
+                  className="mt-1 w-full rounded border border-xango-border p-2 text-sm" />
+                <p className="mt-1 text-xs text-xango-muted">{linhasDetalhamento(p.detalhamento).length} região(ões) — cada uma será cobrada conforme o preço unitário do exame.</p>
+              </div>
+            )}
+            {(p.multiplicidade !== "UNICO") && <p className="mt-2 text-right text-xs font-semibold text-xango-primary">Total do procedimento: {totalPacienteProcedimento(p).toLocaleString("pt-BR", {style:"currency",currency:"BRL"})}</p>}
+          </div>
+        ))}
+      </div>
+    )}
+
     <div className="mt-6 flex items-center justify-between border-t border-xango-border pt-5">
       <button
         type="button"
@@ -3030,7 +3090,14 @@ const contextoAprendizAtendimento = (() => {
       <button
         type="button"
         data-aprendiz="atendimento-procedimento-continuar"
-        onClick={() => setEtapaAtual(2)}
+        onClick={() => {
+          const irregular = procedimentosSelecionados.find((p) => p.multiplicidade === "DETALHADO" && (
+            linhasDetalhamento(p.detalhamento).length === 0 ||
+            new Set(linhasDetalhamento(p.detalhamento).map(v => v.toLocaleUpperCase("pt-BR"))).size !== linhasDetalhamento(p.detalhamento).length
+          ));
+          if (irregular) { alert(`Informe regiões/lados distintos para ${irregular.nome}.`); return; }
+          setEtapaAtual(2);
+        }}
         disabled={procedimentosSelecionados.length === 0}
         className="rounded-md bg-xango-primary px-5 py-2.5 text-sm font-medium text-white transition enabled:hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
@@ -3619,12 +3686,12 @@ const contextoAprendizAtendimento = (() => {
           (procedimento) => !procedimentosCancelados[procedimento.id]
         );
         const subtotal = procedimentosAtivos.reduce(
-          (total, procedimento) => total + procedimento.valor,
+          (total, procedimento) => total + totalPacienteProcedimento(procedimento),
           0
         );
 
         const repasseTotal = procedimentosAtivos.reduce(
-          (total, procedimento) => total + procedimento.repasse,
+          (total, procedimento) => total + totalRepasseProcedimento(procedimento),
           0
         );
         const percentualBeneficio =
@@ -3754,7 +3821,10 @@ const contextoAprendizAtendimento = (() => {
             </div>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-xango-border pt-3">
               <div className="text-xs text-xango-muted">
-                {guia.procedimentos.length} procedimento(s) · Total: <strong className="text-xango-text">{valorFinal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</strong>
+                {guia.procedimentos.length} procedimento(s)
+                {guia.procedimentos.some((p) => quantidadeProcedimento(p) > 1) &&
+                  <> · {guia.procedimentos.reduce((total, p) => total + quantidadeProcedimento(p), 0)} unidades</>}
+                {" · Total: "}<strong className="text-xango-text">{valorFinal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</strong>
                 {saldoPendente > 0 && <span className="ml-2 font-semibold text-amber-700">Pendente: {saldoPendente.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</span>}
               </div>
               <button
@@ -3795,7 +3865,7 @@ const contextoAprendizAtendimento = (() => {
                                 : "text-xango-text"
                             }`}
                           >
-                            {procedimento.nome}
+                            {procedimento.nome}{quantidadeProcedimento(procedimento) > 1 ? ` (x${quantidadeProcedimento(procedimento)})` : ""}
                           </span>
 
                           {cancelado && (
@@ -3808,6 +3878,14 @@ const contextoAprendizAtendimento = (() => {
                         <p className="mt-1 text-xs text-xango-muted">
                           {procedimento.categoria}
                         </p>
+                        {quantidadeProcedimento(procedimento) > 1 && (
+                          <p className="mt-1 text-xs font-medium text-xango-primary">
+                            Quantidade: {quantidadeProcedimento(procedimento)} · Unitário: {procedimento.valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                          </p>
+                        )}
+                        {procedimento.detalhamento && (
+                          <p className="mt-1 whitespace-pre-line text-xs text-xango-muted">{procedimento.detalhamento}</p>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-3">
@@ -3818,7 +3896,7 @@ const contextoAprendizAtendimento = (() => {
                               : "text-xango-text"
                           }`}
                         >
-                          {procedimento.valor.toLocaleString("pt-BR", {
+                          {totalPacienteProcedimento(procedimento).toLocaleString("pt-BR", {
                             style: "currency",
                             currency: "BRL",
                           })}
@@ -4112,6 +4190,9 @@ const contextoAprendizAtendimento = (() => {
               </div>
 
               <div className="flex flex-wrap gap-2">
+                {guiaIds[guia.chave] && guia.tipoAgendamento !== "aguardando" && (
+                  <button type="button" onClick={() => router.push(`/guias/${guiaIds[guia.chave]}#confirmacao-agendamento`)} className="rounded-md border border-emerald-600 px-4 py-2 text-xs font-semibold text-emerald-700">Mensagem de agendamento</button>
+                )}
                 <button
                   type="button"
                   data-aprendiz="atendimento-guia-salvar"
@@ -4369,7 +4450,7 @@ const contextoAprendizAtendimento = (() => {
           );
 
           const subtotal = procedimentosAtivos.reduce(
-            (total, procedimento) => total + procedimento.valor,
+            (total, procedimento) => total + totalPacienteProcedimento(procedimento),
             0
           );
 
@@ -4483,7 +4564,7 @@ const contextoAprendizAtendimento = (() => {
                                 : "text-xango-text"
                             }`}
                           >
-                            {procedimento.nome}
+                            {procedimento.nome}{quantidadeProcedimento(procedimento) > 1 ? ` (x${quantidadeProcedimento(procedimento)})` : ""}
                           </span>
 
                           {cancelado && (
@@ -4500,7 +4581,7 @@ const contextoAprendizAtendimento = (() => {
                               : "text-xango-text"
                           }`}
                         >
-                          {procedimento.valor.toLocaleString("pt-BR", {
+                          {totalPacienteProcedimento(procedimento).toLocaleString("pt-BR", {
                             style: "currency",
                             currency: "BRL",
                           })}
@@ -4729,7 +4810,7 @@ const contextoAprendizAtendimento = (() => {
 
         const subtotal = procedimentosAtivosPagamento.reduce(
           (total, procedimento) =>
-            total + procedimento.valor,
+            total + totalPacienteProcedimento(procedimento),
           0
         );
 

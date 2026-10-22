@@ -55,8 +55,11 @@ type Guia = {
     uf: string | null;
   } | null;
   procedimentos: {
+    itemGuiaId?: number;
     id: number;
     nome: string;
+    quantidade?: number;
+    detalhamento?: string | null;
     valorPaciente: number;
     valorRepasse: number;
   }[];
@@ -453,8 +456,8 @@ export default function GuiasPage() {
                     {guia.procedimentos.length > 0 ? (
                       <div className="space-y-1">
                         {guia.procedimentos.slice(0, 2).map((procedimento) => (
-                          <p key={procedimento.id} className="text-sm text-xango-text">
-                            {procedimento.nome}
+                          <p key={procedimento.itemGuiaId ?? procedimento.id} className="text-sm text-xango-text">
+                            {procedimento.nome}{(procedimento.quantidade ?? 1) > 1 ? ` (x${procedimento.quantidade})` : ""}
                           </p>
                         ))}
                         {guia.procedimentos.length > 2 && (
@@ -606,9 +609,21 @@ export default function GuiasPage() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">Procedimentos</p>
                 <div className="mt-3 divide-y divide-xango-border">
                   {selecionada.procedimentos.map((procedimento) => (
-                    <div key={procedimento.id} className="flex items-center justify-between gap-4 py-2 first:pt-0 last:pb-0">
-                      <p className="text-sm text-xango-text">{procedimento.nome}</p>
-                      <p className="text-sm font-semibold text-xango-text">{moeda(procedimento.valorPaciente)}</p>
+                    <div key={procedimento.itemGuiaId ?? procedimento.id} className="flex items-start justify-between gap-4 py-2 first:pt-0 last:pb-0">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-xango-text">
+                          {procedimento.nome}{(procedimento.quantidade ?? 1) > 1 ? ` (x${procedimento.quantidade})` : ""}
+                        </p>
+                        {(procedimento.quantidade ?? 1) > 1 && (
+                          <p className="mt-1 text-xs text-xango-muted">
+                            Quantidade: {procedimento.quantidade} · Unitário: {moeda(procedimento.valorPaciente / (procedimento.quantidade ?? 1))}
+                          </p>
+                        )}
+                        {procedimento.detalhamento && (
+                          <p className="mt-1 whitespace-pre-line text-xs text-xango-muted">{procedimento.detalhamento}</p>
+                        )}
+                      </div>
+                      <p className="shrink-0 text-sm font-semibold text-xango-text">{moeda(procedimento.valorPaciente)}</p>
                     </div>
                   ))}
                   {selecionada.procedimentos.length === 0 && (
@@ -695,6 +710,7 @@ export default function GuiasPage() {
             </div>
 
             <div className="mt-6 flex flex-wrap gap-2 border-t border-xango-border pt-5">
+              <button type="button" onClick={() => router.push(`/guias/${selecionada.id}#confirmacao-agendamento`)} className="flex items-center gap-2 rounded-md border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700"><ExternalLink size={15} /> Mensagem de agendamento</button>
               <button
                 type="button"
                 onClick={() => router.push(`/atendimentos/${selecionada.atendimento.id}?modo=revisao`)}

@@ -70,6 +70,8 @@ type Orcamento = {
     unidadeClinicaNome: string | null;
     valorPaciente: number;
     valorRepasse: number;
+    quantidade?: number;
+    detalhamento?: string | null;
     convertido: boolean;
     convertidoEm: string | null;
     itemGuiaId: number | null;
@@ -1366,8 +1368,9 @@ export default function OrcamentoPage() {
 
                       <td className="px-4 py-4 align-top">
                         <p className="font-semibold text-xango-text">
-                          {item.procedimentoNome}
+                          {item.procedimentoNome}{Number(item.quantidade || 1) > 1 ? ` (x${item.quantidade})` : ""}
                         </p>
+                        {item.detalhamento && <p className="mt-1 whitespace-pre-line text-xs text-xango-muted">{item.detalhamento}</p>}
                       </td>
 
                       <td className="px-4 py-4 align-top">

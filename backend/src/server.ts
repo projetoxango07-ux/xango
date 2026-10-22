@@ -5725,6 +5725,12 @@ app.get("/procedimentos/catalogo", async (_req, res) => {
   }
 });
 
+type RegraMultiplicidade = "UNICO" | "QUANTIDADE" | "DETALHADO";
+function validarMultiplicidadeProcedimento(valor: unknown): RegraMultiplicidade | null {
+  const regra = valor === undefined || valor === null || valor === "" ? "UNICO" : String(valor);
+  return regra === "UNICO" || regra === "QUANTIDADE" || regra === "DETALHADO" ? regra : null;
+}
+
 app.get("/procedimentos", async (_req, res) => {
   try {
     const procedimentos = await prisma.procedimento.findMany({
@@ -5760,6 +5766,8 @@ app.post("/procedimentos/da-referencia", async (req, res) => {
       return res.status(409).json({ erro: `Esta referência TUSS já está vinculada a "${existente.nome}".` });
     }
     const nome = textoProcedimentoMaiusculo(req.body.nome) || referencia.nomeTuss;
+    const multiplicidade = validarMultiplicidadeProcedimento(req.body.multiplicidade);
+    if (!multiplicidade) return res.status(400).json({ erro: "Multiplicidade inválida." });
     const criado = await prisma.procedimento.create({
       data: {
         nome,
@@ -5773,6 +5781,7 @@ app.post("/procedimentos/da-referencia", async (req, res) => {
         ),
         preparo: String(req.body.preparo || "").trim() || null,
         referenciaId,
+        multiplicidade,
         ativo: true,
       },
       include: { referencia: true },
@@ -5787,6 +5796,8 @@ app.post("/procedimentos/da-referencia", async (req, res) => {
 app.post("/procedimentos", async (req, res) => {
   try {
     const nome = textoProcedimentoMaiusculo(req.body.nome);
+    const multiplicidade = validarMultiplicidadeProcedimento(req.body.multiplicidade);
+    if (!multiplicidade) return res.status(400).json({ erro: "Multiplicidade inválida." });
     const categoria = textoProcedimentoMaiusculo(req.body.categoria) || null;
     const preparo = String(req.body.preparo || "").trim() || null;
     const codigoTuss = String(req.body.codigoTuss || "").replace(/\D/g, "") || null;
@@ -5915,6 +5926,7 @@ app.post("/procedimentos", async (req, res) => {
         codigoTuss,
         nomeTuss,
         quantidadeCh,
+        multiplicidade,
         ativo: true,
       },
     });
@@ -5945,12 +5957,29 @@ app.patch("/procedimentos/:id", async (req, res) => {
         codigoTuss: true,
         nomeTuss: true,
         quantidadeCh: true,
+        multiplicidade: true,
         ativo: true,
       },
     });
 
     if (!atual) {
       return res.status(404).json({ erro: "Procedimento não encontrado." });
+    }
+
+    const multiplicidade = req.body.multiplicidade === undefined
+      ? atual.multiplicidade
+      : validarMultiplicidadeProcedimento(req.body.multiplicidade);
+    if (!multiplicidade) return res.status(400).json({ erro: "Multiplicidade inválida." });
+
+    if (multiplicidade === "UNICO" && atual.multiplicidade !== "UNICO") {
+      const [guiasMultiplas, orcamentosMultiplos, modelosMultiplos] = await Promise.all([
+        prisma.itemGuia.count({ where: { procedimentoId: id, OR: [{ quantidade: { gt: 1 } }, { detalhamento: { not: null } }] } }),
+        prisma.itemOrcamento.count({ where: { procedimentoId: id, OR: [{ quantidade: { gt: 1 } }, { detalhamento: { not: null } }] } }),
+        prisma.itemModeloOrcamento.count({ where: { procedimentoId: id, OR: [{ quantidade: { gt: 1 } }, { detalhamento: { not: null } }] } }),
+      ]);
+      if (guiasMultiplas + orcamentosMultiplos + modelosMultiplos > 0) {
+        return res.status(409).json({ erro: "Este procedimento já possui histórico com múltiplas unidades ou detalhamentos. Não é possível alterá-lo para Único." });
+      }
     }
 
     const nome =
@@ -6105,6 +6134,7 @@ app.patch("/procedimentos/:id", async (req, res) => {
         codigoTuss,
         nomeTuss,
         quantidadeCh,
+        multiplicidade,
       },
     });
 
@@ -8498,6 +8528,65 @@ app.post("/pacientes", async (req, res) => {
   } catch (erro) { console.error("Erro ao cadastrar paciente:", erro); return res.status(500).json({ erro: "Não foi possível cadastrar o paciente." }); }
 });
 
+// V1.1 - regras controladas por procedimento (o padrão de todo legado é UNICO).
+// Valores do item são TOTAIS (quantidade x preço unitário), nunca preços unitários.
+async function validarMultiplicidadeItensAtendimento(guias: any[]): Promise<string | null> {
+  if (!Array.isArray(guias)) return "Formato de guias inválido.";
+  const ids = new Set<number>();
+  for (const guia of guias) {
+    if (!Array.isArray(guia?.itens)) return "Itens da guia inválidos.";
+    for (const item of guia.itens) {
+      const id = Number(item?.procedimentoId);
+      if (!Number.isInteger(id) || id <= 0) return "Procedimento inválido na guia.";
+      ids.add(id);
+    }
+  }
+  const procedimentos = await prisma.procedimento.findMany({
+    where: { id: { in: [...ids] } },
+    select: { id: true, nome: true, multiplicidade: true },
+  });
+  const regras = new Map(procedimentos.map(p => [p.id, p]));
+  // As restrições valem para o atendimento inteiro, mesmo com várias guias.
+  const ocorrencias = new Map<number, number>();
+  const detalhamentos = new Map<number, Set<string>>();
+  for (const guia of guias) {
+    for (const item of guia.itens) {
+      const id = Number(item.procedimentoId);
+      const procedimento = regras.get(id);
+      if (!procedimento) return `Procedimento ${id} não encontrado.`;
+      const quantidade = item.quantidade === undefined || item.quantidade === null ? 1 : Number(item.quantidade);
+      const detalhes = String(item.detalhamento || "").trim();
+      if (!Number.isInteger(quantidade) || quantidade < 1 || quantidade > 100) {
+        return `Quantidade inválida para ${procedimento.nome} (1 a 100).`;
+      }
+      const atual = ocorrencias.get(id) || 0;
+      if (!item.cancelado) ocorrencias.set(id, atual + 1);
+      if (procedimento.multiplicidade === "UNICO" && !item.cancelado && (quantidade !== 1 || atual > 0 || detalhes)) {
+        return `${procedimento.nome} permite somente uma ocorrência, sem detalhamento.`;
+      }
+      if (procedimento.multiplicidade === "QUANTIDADE" && !item.cancelado && (atual > 0 || detalhes)) {
+        return `${procedimento.nome} deve ser informado em uma única linha de quantidade.`;
+      }
+      if (procedimento.multiplicidade === "DETALHADO" && !item.cancelado) {
+        // Cadastro histórico (uma unidade sem detalhamento) continua editável.
+        if (!detalhes && quantidade !== 1) return `Informe o detalhamento de ${procedimento.nome}.`;
+        if (detalhes) {
+          const regioes = detalhes.split(/[\n;]+/).map(v => v.trim()).filter(Boolean);
+          if (regioes.length !== quantidade) return `Quantidade e detalhamento de ${procedimento.nome} não conferem.`;
+          const jaVistos = detalhamentos.get(id) || new Set<string>();
+          for (const regiao of regioes) {
+            const chave = regiao.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+            if (jaVistos.has(chave)) return `Detalhamento repetido em ${procedimento.nome}: ${regiao}.`;
+            jaVistos.add(chave);
+          }
+          detalhamentos.set(id, jaVistos);
+        }
+      }
+    }
+  }
+  return null;
+}
+
 // ======================================================
 // CRIAR ATENDIMENTO COMPLETO
 // ======================================================
@@ -8515,6 +8604,9 @@ app.post("/atendimentos", async (req, res) => {
         erro: "Paciente é obrigatório.",
       });
     }
+
+    const erroMultiplicidade = await validarMultiplicidadeItensAtendimento(guias);
+    if (erroMultiplicidade) return res.status(400).json({ erro: erroMultiplicidade });
 
     const paciente = await prisma.paciente.findUnique({
       where: {
@@ -8608,6 +8700,8 @@ app.post("/atendimentos", async (req, res) => {
             data: {
               guiaId: guia.id,
               procedimentoId: Number(item.procedimentoId),
+              quantidade: Number(item.quantidade ?? 1),
+              detalhamento: String(item.detalhamento || "").trim() || null,
 
               status: item.cancelado
                 ? "CANCELADO"
@@ -8755,6 +8849,9 @@ app.put("/atendimentos/:id", async (req, res) => {
       etapaAtual,
       guias = [],
     } = req.body;
+
+    const erroMultiplicidade = await validarMultiplicidadeItensAtendimento(guias);
+    if (erroMultiplicidade) return res.status(400).json({ erro: erroMultiplicidade });
 
     const atendimentoExistente =
       await prisma.atendimento.findUnique({
@@ -8924,6 +9021,8 @@ app.put("/atendimentos/:id", async (req, res) => {
                 );
 
               const dadosItem = {
+                quantidade: Number(item.quantidade ?? 1),
+                detalhamento: String(item.detalhamento || "").trim() || null,
                 status: item.cancelado
                   ? ("CANCELADO" as const)
                   : ("ATIVO" as const),
@@ -9472,6 +9571,7 @@ async function validarItemOrcamentoRecebido(itemRecebido: any) {
       select: {
         id: true,
         nome: true,
+        multiplicidade: true,
       },
     }),
     prisma.precoProcedimentoClinica.findFirst({
@@ -9492,6 +9592,17 @@ async function validarItemOrcamentoRecebido(itemRecebido: any) {
 
   if (!procedimento) {
     throw new Error("PROCEDIMENTO_INATIVO");
+  }
+
+  const quantidade = itemRecebido?.quantidade === undefined ? 1 : Number(itemRecebido.quantidade);
+  const detalhamento = String(itemRecebido?.detalhamento || "").trim() || null;
+  if (!Number.isInteger(quantidade) || quantidade < 1 || quantidade > 100) throw new Error("QUANTIDADE_ORCAMENTO_INVALIDA");
+  if (procedimento.multiplicidade === "UNICO" && (quantidade !== 1 || detalhamento)) throw new Error("PROCEDIMENTO_UNICO");
+  if (procedimento.multiplicidade === "QUANTIDADE" && detalhamento) throw new Error("DETALHAMENTO_NAO_PERMITIDO");
+  if (procedimento.multiplicidade === "DETALHADO" && (quantidade > 1 || detalhamento) &&
+      (!detalhamento || detalhamento.split(/[\n;]+/).map(v => v.trim()).filter(Boolean).length !== quantidade ||
+       new Set(detalhamento.split(/[\n;]+/).map(v => v.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase()).filter(Boolean)).size !== quantidade)) {
+    throw new Error("DETALHAMENTO_OBRIGATORIO");
   }
 
   if (!precoBase) {
@@ -9541,13 +9652,19 @@ async function validarItemOrcamentoRecebido(itemRecebido: any) {
     procedimentoId,
     clinicaId,
     unidadeClinicaId,
-    valorPaciente,
-    valorRepasse,
+    quantidade,
+    detalhamento,
+    valorPaciente: Math.round(valorPaciente * quantidade * 100) / 100,
+    valorRepasse: Math.round(valorRepasse * quantidade * 100) / 100,
   };
 }
 
 function respostaErroItemOrcamento(erro: unknown, res: any) {
   const codigo = erro instanceof Error ? erro.message : "";
+  if (codigo === "QUANTIDADE_ORCAMENTO_INVALIDA") return res.status(400).json({ erro: "Quantidade inválida no orçamento (1 a 100)." });
+  if (codigo === "PROCEDIMENTO_UNICO") return res.status(400).json({ erro: "O procedimento escolhido só permite uma unidade." });
+  if (codigo === "DETALHAMENTO_NAO_PERMITIDO") return res.status(400).json({ erro: "Este procedimento permite quantidade, mas não detalhamento." });
+  if (codigo === "DETALHAMENTO_OBRIGATORIO") return res.status(400).json({ erro: "Informe um detalhe por unidade deste procedimento." });
 
   if (codigo === "PROCEDIMENTO_INVALIDO") {
     return res.status(400).json({
@@ -10166,6 +10283,8 @@ app.get("/orcamentos", async (_req, res) => {
           unidadeClinicaId: item.unidadeClinicaId,
           unidadeClinicaNome: item.unidadeClinica?.nome || null,
           valorPaciente: Number(item.valorPaciente),
+          quantidade: item.quantidade,
+          detalhamento: item.detalhamento,
           convertido: Boolean(item.itemGuiaId),
         })),
       };
@@ -10239,6 +10358,8 @@ app.post("/orcamentos", async (req, res) => {
       procedimentoId: number;
       clinicaId: number;
       unidadeClinicaId: number | null;
+      quantidade: number;
+      detalhamento: string | null;
       valorPaciente: number;
       valorRepasse: number;
     }> = [];
@@ -10367,6 +10488,8 @@ app.post("/orcamentos", async (req, res) => {
         unidadeClinicaNome: item.unidadeClinica?.nome || null,
         valorPaciente: Number(item.valorPaciente),
         valorRepasse: Number(item.valorRepasse),
+        quantidade: item.quantidade,
+        detalhamento: item.detalhamento,
         convertido: Boolean(item.itemGuiaId),
         convertidoEm: item.convertidoEm,
       })),
@@ -10478,6 +10601,8 @@ app.get("/orcamentos/:id", async (req, res) => {
         unidadeClinicaNome: item.unidadeClinica?.nome || null,
         valorPaciente: Number(item.valorPaciente),
         valorRepasse: Number(item.valorRepasse),
+        quantidade: item.quantidade,
+        detalhamento: item.detalhamento,
         convertido: Boolean(item.itemGuiaId),
         convertidoEm: item.convertidoEm,
         itemGuiaId: item.itemGuiaId,
@@ -10558,6 +10683,8 @@ app.put("/orcamentos/:id", async (req, res) => {
       procedimentoId: number;
       clinicaId: number;
       unidadeClinicaId: number | null;
+      quantidade: number;
+      detalhamento: string | null;
       valorPaciente: number;
       valorRepasse: number;
     }> = [];
@@ -10595,7 +10722,9 @@ app.put("/orcamentos/:id", async (req, res) => {
         itemAnterior &&
         itemAnterior.procedimentoId === itemValidado.procedimentoId &&
         itemAnterior.clinicaId === itemValidado.clinicaId &&
-        itemAnterior.unidadeClinicaId === itemValidado.unidadeClinicaId
+        itemAnterior.unidadeClinicaId === itemValidado.unidadeClinicaId &&
+        itemAnterior.quantidade === itemValidado.quantidade &&
+        (itemAnterior.detalhamento || "") === (itemValidado.detalhamento || "")
       ) {
         itemValidado.valorPaciente = Number(itemAnterior.valorPaciente);
         itemValidado.valorRepasse = Number(itemAnterior.valorRepasse);
@@ -10848,6 +10977,8 @@ app.post("/orcamentos/:id/converter", async (req, res) => {
             data: {
               guiaId: guia.id,
               procedimentoId: itemOrcamento.procedimentoId,
+              quantidade: itemOrcamento.quantidade,
+              detalhamento: itemOrcamento.detalhamento,
               status: "ATIVO",
               valorPaciente: itemOrcamento.valorPaciente,
               valorRepasse: itemOrcamento.valorRepasse,
@@ -11136,8 +11267,11 @@ app.get("/guias", async (_req, res) => {
           : null,
 
         procedimentos: itensAtivos.map((item) => ({
+          itemGuiaId: item.id,
           id: item.procedimento.id,
           nome: item.procedimento.nome,
+          quantidade: item.quantidade,
+          detalhamento: item.detalhamento,
           valorPaciente: Number(item.valorPaciente),
           valorRepasse: Number(item.valorRepasse),
         })),

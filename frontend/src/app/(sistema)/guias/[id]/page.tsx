@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import ConfirmacaoAgendamento from "@/components/ConfirmacaoAgendamento";
 import {
   ArrowLeft,
   CalendarDays,
@@ -66,6 +67,8 @@ type GuiaDetalhe = {
     status: string;
     valorPaciente: string | number;
     valorRepasse: string | number;
+    quantidade?: number;
+    detalhamento?: string | null;
     tipoAgendamento: "HORARIO" | "ORDEM_CHEGADA" | null;
     dataAgendamento: string | null;
     horarioAgendamento: string | null;
@@ -216,6 +219,14 @@ export default function GuiaDetalhePage() {
     return () => { ativo = false; };
   }, [guiaId]);
 
+  useEffect(() => {
+    if (!guia || window.location.hash !== "#confirmacao-agendamento") return;
+    const timer = window.setTimeout(() => {
+      document.getElementById("confirmacao-agendamento")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [guia]);
+
   const financeiro = useMemo(() => {
     if (!guia) return { totalPago: 0, totalEstornado: 0, pagoLiquido: 0, saldo: 0 };
     const totalPago = guia.pagamentos.reduce((soma, item) => soma + numero(item.valor), 0);
@@ -305,7 +316,8 @@ export default function GuiaDetalhePage() {
           {itensAtivos.map((item) => (
             <div key={item.id} className="grid gap-3 px-5 py-4 md:grid-cols-[1fr_220px_150px] md:items-center">
               <div>
-                <p className="font-semibold text-xango-text">{item.procedimento.nome}</p>
+                <p className="font-semibold text-xango-text">{item.procedimento.nome}{Number(item.quantidade || 1) > 1 ? ` (x${item.quantidade})` : ""}</p>
+                {item.detalhamento && <p className="mt-1 whitespace-pre-line text-xs text-xango-muted">{item.detalhamento}</p>}
                 {item.procedimento.categoria && <p className="mt-1 text-xs text-xango-muted">{item.procedimento.categoria}</p>}
               </div>
               <div className="text-sm text-xango-muted">
@@ -321,6 +333,8 @@ export default function GuiaDetalhePage() {
           {itensAtivos.length === 0 && <div className="px-5 py-8 text-sm text-xango-muted">Nenhum procedimento ativo nesta guia.</div>}
         </div>
       </section>
+
+      <ConfirmacaoAgendamento guia={guia} />
 
       <section className="rounded-lg border border-xango-border bg-white p-5 shadow-sm">
         <div className="flex items-center gap-2 text-xango-primary"><WalletCards size={17} /><h3 className="font-semibold">Financeiro</h3></div>

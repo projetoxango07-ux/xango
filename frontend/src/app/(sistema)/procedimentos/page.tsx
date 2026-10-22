@@ -76,6 +76,7 @@ type Procedimento = {
   codigoTuss: string | null;
   nomeTuss: string | null;
   quantidadeCh: number | null;
+  multiplicidade: "UNICO" | "QUANTIDADE" | "DETALHADO";
   ativo: boolean;
   precos: PrecoClinica[];
   precosUnidade: PrecoUnidade[];
@@ -96,6 +97,7 @@ type Formulario = {
   codigoTuss: string;
   nomeTuss: string;
   quantidadeCh: string;
+  multiplicidade: "UNICO" | "QUANTIDADE" | "DETALHADO";
   aliases: string;
   preparo: string;
 };
@@ -106,6 +108,7 @@ const formularioVazio: Formulario = {
   codigoTuss: "",
   nomeTuss: "",
   quantidadeCh: "",
+  multiplicidade: "UNICO",
   aliases: "",
   preparo: "",
 };
@@ -293,6 +296,7 @@ export default function ProcedimentosPage() {
       codigoTuss: p.codigoTuss || "",
       nomeTuss: p.nomeTuss || "",
       quantidadeCh: p.quantidadeCh === null ? "" : String(p.quantidadeCh).replace(".", ","),
+      multiplicidade: p.multiplicidade || "UNICO",
       aliases: p.aliases.join("\n"),
       preparo: p.preparo || "",
     });
@@ -313,6 +317,7 @@ export default function ProcedimentosPage() {
         codigoTuss: form.codigoTuss,
         nomeTuss: form.nomeTuss,
         quantidadeCh: form.quantidadeCh,
+        multiplicidade: form.multiplicidade,
         aliases: form.aliases
           .split(/\n|,/)
           .map((v) => v.trim())
@@ -531,6 +536,7 @@ export default function ProcedimentosPage() {
                 <InfoCard titulo="TUSS" valor={selecionado.codigoTuss || "Não vinculado"} icone={<Stethoscope size={18} />} />
                 <InfoCard titulo="CH" valor={selecionado.quantidadeCh === null ? "Não informado" : String(selecionado.quantidadeCh)} icone={<Calculator size={18} />} />
                 <InfoCard titulo="Categoria" valor={selecionado.categoria || "Sem categoria"} icone={<SlidersHorizontal size={18} />} />
+                <InfoCard titulo="Multiplicidade" valor={{ UNICO: "Único", QUANTIDADE: "Por quantidade", DETALHADO: "Com detalhamento" }[selecionado.multiplicidade || "UNICO"]} icone={<SlidersHorizontal size={18} />} />
               </div>
 
               {selecionado.nomeTuss && (
@@ -768,6 +774,15 @@ export default function ProcedimentosPage() {
                   Usado somente nas clínicas/laboratórios configurados para precificação por CH. Preços fixos continuam permitidos como exceção.
                 </p>
               </div>
+
+              <Campo label="Regra de multiplicidade">
+                <select value={form.multiplicidade} onChange={(e) => setForm({ ...form, multiplicidade: e.target.value as Formulario["multiplicidade"] })} className="input-proc">
+                  <option value="UNICO">Único — apenas uma ocorrência</option>
+                  <option value="QUANTIDADE">Quantidade — ex.: RX Geral (6)</option>
+                  <option value="DETALHADO">Detalhado — ex.: lado direito e esquerdo</option>
+                </select>
+                <p className="mt-1 text-xs text-xango-muted">A regra vale somente para este procedimento. O padrão permanece Único.</p>
+              </Campo>
 
               <Campo label="Sinônimos / aliases">
                 <textarea value={form.aliases} onChange={(e) => setForm({ ...form, aliases: e.target.value })} rows={4} className="input-proc resize-y" placeholder={"Um por linha. Ex.:\nHEMOGRAMA\nHC"} />

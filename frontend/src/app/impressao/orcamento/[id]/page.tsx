@@ -32,6 +32,8 @@ type Orcamento = {
     clinicaNome: string | null;
     unidadeClinicaNome: string | null;
     valorPaciente: number;
+    quantidade?: number;
+    detalhamento?: string | null;
     convertido: boolean;
   }>;
 };
@@ -297,7 +299,7 @@ export default function ImpressaoOrcamentoPage() {
             <tbody>
               {orcamento.itens.map((item) => (
                 <tr key={item.id} className="border-b border-slate-200">
-                  <td className="px-3 py-3 font-semibold text-slate-900">{item.procedimentoNome}</td>
+                  <td className="px-3 py-3 font-semibold text-slate-900">{item.procedimentoNome}{Number(item.quantidade || 1) > 1 ? ` (x${item.quantidade})` : ""}{item.detalhamento && <p className="mt-1 whitespace-pre-line text-[10px] font-normal">{item.detalhamento}</p>}</td>
                   <td className="px-3 py-3 text-slate-700">
                     {item.clinicaNome || "A definir"}
                     {item.unidadeClinicaNome ? ` • ${item.unidadeClinicaNome}` : ""}
