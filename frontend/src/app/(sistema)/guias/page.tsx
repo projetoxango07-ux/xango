@@ -28,6 +28,7 @@ type Guia = {
   validadeAte: string | null;
   confirmadaEm: string | null;
   realizadaEm: string | null;
+  confirmadaPorNome?: string | null;
   atendimento: {
     id: number;
     codigoPublico: string | null;
@@ -62,6 +63,10 @@ type Guia = {
     detalhamento?: string | null;
     valorPaciente: number;
     valorRepasse: number;
+    status: "ATIVO" | "REALIZADO" | "CANCELADO";
+    realizadaEm: string | null;
+    confirmadaEm: string | null;
+    confirmadaPorNome: string | null;
   }[];
   itensCancelados: {
     id: number;
@@ -207,6 +212,7 @@ export default function GuiasPage() {
   const [selecionada, setSelecionada] = useState<Guia | null>(null);
   const [dataRealizacao, setDataRealizacao] = useState(hojeInput());
   const [confirmandoRealizacao, setConfirmandoRealizacao] = useState(false);
+  const [itensParaConfirmar, setItensParaConfirmar] = useState<number[]>([]);
 
   async function carregar() {
     try {
@@ -220,7 +226,13 @@ export default function GuiasPage() {
       if (!resposta.ok) {
         throw new Error(dados.erro || "Não foi possível carregar as guias.");
       }
-      setGuias(Array.isArray(dados) ? dados : []);
+      const lista = Array.isArray(dados) ? dados as Guia[] : [];
+      setGuias(lista);
+      // Recarrega o painel que estiver aberto, exibindo a confirmação
+      // recém-registrada sem exigir que o usuário feche e abra a guia.
+      setSelecionada((atual) =>
+        atual ? lista.find((guia) => guia.id === atual.id) || null : null
+      );
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Não foi possível carregar as guias.");
     } finally {
@@ -246,10 +258,11 @@ export default function GuiasPage() {
   }, [guias, selecionada?.id]);
 
   useEffect(() => {
-    if (selecionada && !selecionada.confirmadaEm) {
+    if (selecionada) {
       setDataRealizacao(hojeInput());
+      setItensParaConfirmar([]);
     }
-  }, [selecionada?.id, selecionada?.confirmadaEm]);
+  }, [selecionada?.id]);
 
   function fecharDetalhes() {
     if (typeof window !== "undefined") {
@@ -270,24 +283,34 @@ export default function GuiasPage() {
   async function confirmarAtendimentoRealizado() {
     if (!selecionada || confirmandoRealizacao) return;
 
-    if (selecionada.status !== "PAGA" || selecionada.financeiro.saldo > 0.009) {
-      alert("A guia precisa estar totalmente quitada antes da confirmação do atendimento.");
+    if (selecionada.status === "CANCELADA" || selecionada.status === "RASCUNHO") {
+      alert("Esta guia não está disponível para confirmação de realização.");
       return;
     }
 
+    if (!itensParaConfirmar.length || itensParaConfirmar.some((id) =>
+      !selecionada.procedimentos.some((p) => p.itemGuiaId === id && p.status === "ATIVO"))) {
+      alert("Selecione ao menos um procedimento ainda pendente.");
+      return;
+    }
     if (!dataRealizacao) {
       alert("Informe a data em que o atendimento foi realizado.");
       return;
     }
 
-    const data = new Date(`${dataRealizacao}T12:00:00`);
-    if (Number.isNaN(data.getTime())) {
+    const data = new Date(`${dataRealizacao}T12:00:00-03:00`);
+    if (Number.isNaN(data.getTime()) ||
+        data.toISOString().slice(0, 10) !== dataRealizacao) {
       alert("Informe uma data de realização válida.");
+      return;
+    }
+    if (dataRealizacao > hojeInput()) {
+      alert("A data de realização não pode ser futura.");
       return;
     }
 
     const confirmou = window.confirm(
-      `Confirmar que o atendimento da guia ${selecionada.codigoPublico || `#${selecionada.id}`} foi realizado em ${data.toLocaleDateString("pt-BR")}?`
+      `Confirmar ${itensParaConfirmar.length} procedimento(s) selecionado(s) da guia ${selecionada.codigoPublico || `#${selecionada.id}`} como realizados em ${data.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}?\n\nSomente os selecionados ficarão elegíveis para repasse. Parcelas e pagamentos não serão alterados.`
     );
 
     if (!confirmou) return;
@@ -304,7 +327,8 @@ export default function GuiasPage() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            realizadaEm: data.toISOString(),
+            realizadaEm: dataRealizacao,
+            itemGuiaIds: itensParaConfirmar,
           }),
         }
       );
@@ -314,9 +338,9 @@ export default function GuiasPage() {
         throw new Error(dados.erro || "Não foi possível confirmar o atendimento realizado.");
       }
 
-      alert("Atendimento realizado confirmado com sucesso.");
-      fecharDetalhes();
       await carregar();
+      setItensParaConfirmar([]);
+      alert(`${dados.procedimentosConfirmados || itensParaConfirmar.length} procedimento(s) confirmados. Somente eles poderão ser solicitados para repasse; o saldo do paciente não foi alterado.`);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Não foi possível confirmar o atendimento realizado.");
     } finally {
@@ -493,6 +517,12 @@ export default function GuiasPage() {
                     <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClass(guia.status)}`}>
                       {statusLabel(guia.status)}
                     </span>
+                    {guia.procedimentos.some((item) => item.status === "REALIZADO") && (
+                      <p className="mt-2 flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                        <CheckCircle2 size={13} /> {guia.procedimentos.every((item) => item.status === "REALIZADO")
+                          ? "Realizado" : "Realização parcial"}
+                      </p>
+                    )}
                   </td>
 
                   <td className="sticky right-0 z-10 bg-white px-3 py-4 align-top text-right shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)] group-hover:bg-xango-background">
@@ -640,6 +670,69 @@ export default function GuiasPage() {
                 <p className="mt-2 text-sm text-xango-text">{resumoAgendamento(selecionada)}</p>
               </div>
 
+              {/* Confirmação por procedimento, sem vínculo com quitação do paciente. */}
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                <div className="flex items-center gap-2 text-amber-800">
+                  <CheckCircle2 size={17} />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Realização dos procedimentos</p>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-amber-800">
+                  Confirme apenas os exames efetivamente realizados. Cada procedimento confirmado
+                  poderá entrar no fluxo de repasse à clínica, mesmo com parcelas em aberto.
+                </p>
+                <div className="mt-3 space-y-2">
+                  {selecionada.procedimentos.map((proc) => {
+                    const realizado = proc.status === "REALIZADO";
+                    const id = Number(proc.itemGuiaId);
+                    return (
+                      <label key={id} className={`flex items-start gap-3 rounded-md border p-3 ${realizado
+                        ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-white"}`}>
+                        <input
+                          type="checkbox"
+                          disabled={realizado || confirmandoRealizacao || selecionada.status === "RASCUNHO" || selecionada.status === "CANCELADA"}
+                          checked={realizado || itensParaConfirmar.includes(id)}
+                          onChange={(e) => setItensParaConfirmar((atual) => e.target.checked
+                            ? [...atual, id] : atual.filter((x) => x !== id))}
+                          className="mt-0.5 h-4 w-4 accent-emerald-700"
+                        />
+                        <span className="flex-1 text-xs text-xango-text">
+                          <strong>{proc.nome}</strong>
+                          {realizado ? (
+                            <span className="mt-1 block text-emerald-800">
+                              Realizado em {dataBr(proc.realizadaEm || selecionada.realizadaEm)}
+                              {proc.confirmadaPorNome ? ` • ${proc.confirmadaPorNome}` : ""}
+                            </span>
+                          ) : <span className="mt-1 block text-amber-800">Aguardando confirmação</span>}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {selecionada.procedimentos.some((p) => p.status === "ATIVO") &&
+                  selecionada.status !== "CANCELADA" && selecionada.status !== "RASCUNHO" && (
+                    <>
+                      <label className="mt-3 block text-xs font-semibold text-xango-text">
+                        Data efetiva da realização dos selecionados
+                        <input
+                          type="date"
+                          value={dataRealizacao}
+                          max={hojeInput()}
+                          onChange={(event) => setDataRealizacao(event.target.value)}
+                          className="mt-1 w-full rounded-md border border-xango-border bg-white px-3 py-2 text-sm font-normal outline-none focus:border-xango-primary"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => void confirmarAtendimentoRealizado()}
+                        disabled={confirmandoRealizacao || itensParaConfirmar.length === 0}
+                        className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                      >
+                        <CheckCircle2 size={16} /> Confirmar {itensParaConfirmar.length} procedimento(s)
+                      </button>
+                    </>
+                  )}
+              </div>
+
               <div className="rounded-lg border border-xango-border p-4">
                 <div className="flex items-center gap-2 text-xango-primary">
                   <WalletCards size={16} />
@@ -664,49 +757,6 @@ export default function GuiasPage() {
                   </div>
                 </div>
               </div>
-
-              {selecionada.confirmadaEm ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-                  <div className="flex items-center gap-2 text-emerald-700">
-                    <CheckCircle2 size={17} />
-                    <p className="text-xs font-semibold uppercase tracking-wide">Atendimento confirmado</p>
-                  </div>
-                  <p className="mt-2 text-sm font-semibold text-emerald-900">
-                    Procedimento realizado em {dataBr(selecionada.realizadaEm || selecionada.confirmadaEm)}
-                  </p>
-                  <p className="mt-1 text-xs text-emerald-700">
-                    Confirmação registrada em {new Date(selecionada.confirmadaEm).toLocaleString("pt-BR")}
-                  </p>
-                </div>
-              ) : selecionada.status === "PAGA" && selecionada.financeiro.saldo <= 0.009 && selecionada.procedimentos.length > 0 ? (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-                  <div className="flex items-center gap-2 text-amber-800">
-                    <CheckCircle2 size={17} />
-                    <p className="text-xs font-semibold uppercase tracking-wide">Confirmar atendimento realizado</p>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-amber-800">
-                    Use esta confirmação somente depois que a clínica informar que o procedimento foi realizado. Na V2, a própria clínica fará esta etapa pelo Portal Parceiro.
-                  </p>
-                  <label className="mt-3 block text-xs font-semibold text-xango-text">
-                    Data da realização
-                    <input
-                      type="date"
-                      value={dataRealizacao}
-                      onChange={(event) => setDataRealizacao(event.target.value)}
-                      className="mt-1 w-full rounded-md border border-xango-border bg-white px-3 py-2 text-sm font-normal outline-none focus:border-xango-primary"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => void confirmarAtendimentoRealizado()}
-                    disabled={confirmandoRealizacao}
-                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <CheckCircle2 size={16} />
-                    {confirmandoRealizacao ? "Confirmando..." : "Confirmar atendimento realizado"}
-                  </button>
-                </div>
-              ) : null}
             </div>
 
             <div className="mt-6 flex flex-wrap gap-2 border-t border-xango-border pt-5">

@@ -88,6 +88,12 @@ type GuiaApi = {
     forma: string;
     motivo: string | null;
   }[];
+  elegibilidadeImpressao?: {
+    podeImprimir: boolean;
+    liberadoPorParcelamento?: boolean;
+    saldoFinanceiro?: number;
+    motivos?: string[];
+  };
 };
 
 function somenteNumeros(valor: string) {
@@ -214,20 +220,10 @@ export default function ImprimirGuiaPage() {
   }
 
   const itensAtivos = guia.itens.filter((item) => item.status !== "CANCELADO");
-  const totalPago = guia.pagamentos.reduce(
-    (total, pagamento) => total + Number(pagamento.valor),
-    0
-  );
-  const totalEstornado = guia.estornos.reduce(
-    (total, estorno) => total + Number(estorno.valor),
-    0
-  );
-  const pagoLiquido = Math.max(totalPago - totalEstornado, 0);
 
-  const podeImprimir =
-    itensAtivos.length > 0 &&
-    guia.status === "PAGA" &&
-    pagoLiquido >= Number(guia.valorFinal);
+  // Somente o backend decide a liberação: guia quitada OU parcelamento
+  // que cubra integralmente o saldo, sempre com cadastro completo.
+  const podeImprimir = Boolean(guia.elegibilidadeImpressao?.podeImprimir);
 
   const dataEmissao = guia.emitidaEm
     ? new Date(guia.emitidaEm)
@@ -258,13 +254,14 @@ export default function ImprimirGuiaPage() {
         </button>
       </div>
 
-      <article className="mx-auto max-w-4xl bg-white p-8 shadow print:max-w-none print:p-0 print:shadow-none">
-        {!podeImprimir && (
-          <div className="mb-5 rounded-md border border-red-300 bg-red-50 p-4 text-sm font-semibold text-red-700 print:hidden">
-            Este voucher não está liberado para impressão.
-          </div>
-        )}
-
+      {!podeImprimir ? (
+        <div className="mx-auto max-w-4xl rounded border border-red-300 bg-red-50 p-5 font-semibold text-red-800">
+          Voucher não autorizado para emissão.
+          {(guia.elegibilidadeImpressao?.motivos || []).map((motivo) => (
+            <p key={motivo} className="mt-2 text-sm font-normal">{motivo}</p>
+          ))}
+        </div>
+      ) : <article className="mx-auto max-w-4xl bg-white p-8 shadow print:max-w-none print:p-0 print:shadow-none">
         {/* CABEÇALHO DA EMPRESA CONTRATANTE */}
         <header className="border-b-2 border-slate-900 pb-4">
           <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-start">
@@ -494,7 +491,7 @@ export default function ImprimirGuiaPage() {
             </span>
           </div>
         </footer>
-      </article>
+      </article>}
     </main>
   );
 }

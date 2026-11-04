@@ -25,7 +25,7 @@ const ITENS_POR_PAGINA = 25;
 
 type AbaPrincipal = "OPERACIONAIS" | "FINANCEIROS" | "PRODUCAO";
 type AbaOperacional = "ATENDIMENTOS" | "GUIAS";
-type AbaFinanceira = "MOVIMENTACOES" | "REPASSES";
+type AbaFinanceira = "MOVIMENTACOES" | "REPASSES" | "PREVISOES";
 type AbaProducao = "CLINICAS" | "PROCEDIMENTOS";
 
 type Opcao = { id: number; nome: string };
@@ -60,6 +60,7 @@ type GuiaRelatorio = {
   codigoPublico: string | null;
   status: string;
   realizacao: string;
+  autorizadoPorParcelamento: boolean;
   criadoEm: string;
   emitidaEm: string | null;
   validadeAte: string | null;
@@ -189,6 +190,12 @@ type ItemRepasseRelatorio = {
   telefone: string;
   valor: number;
   confirmadoEm: string;
+  procedimentos: Array<{
+    id: number;
+    nome: string;
+    realizadaEm: string | null;
+    confirmadaEm: string | null;
+  }>;
 };
 
 type RepasseFinanceiroRelatorio = {
@@ -217,9 +224,63 @@ type RepasseFinanceiroRelatorio = {
   recusadoPor: string | null;
   pagoPor: string | null;
   quantidadeGuias: number;
+  quantidadeProcedimentos: number | null;
   percentualDocumentacao: number | null;
   documentos: DocumentoRepasseRelatorio[];
   itens: ItemRepasseRelatorio[];
+};
+
+type PrevisaoFinanceiraRelatorio = {
+  guiaId: number;
+  codigoVoucher: string | null;
+  atendimentoId: number;
+  codigoAtendimento: string | null;
+  criadoEm: string;
+  paciente: string;
+  cpf: string | null;
+  clinicaId: number;
+  clinica: string;
+  situacaoRepasse: "AGUARDANDO_CONFIRMACAO" | "DISPONIVEL" | "EM_REPASSE" | "PAGO" | "PARCIAL";
+  valorOriginal: number;
+  desconto: number;
+  beneficio: number;
+  reducaoTotal: number;
+  valorFinal: number;
+  recebido: number;
+  saldoReceber: number;
+  valorRepasse: number;
+  valorRepasseRegistrado: number;
+  tarifasRegistradas: number;
+  margemBruta: number;
+  margemEstimada: number;
+  margemPercentual: number;
+};
+
+type ResumoPrevisoes = {
+  totalGuias: number;
+  valorOriginal: number;
+  desconto: number;
+  beneficio: number;
+  reducaoTotal: number;
+  valorFinal: number;
+  recebido: number;
+  saldoReceber: number;
+  valorRepasse: number;
+  tarifasRegistradas: number;
+  margemBruta: number;
+  margemEstimada: number;
+  aConfirmar: number;
+  disponivelSolicitacao: number;
+  emRepasse: number;
+  registradoPago: number;
+};
+
+const SITUACOES_PREVISAO: Record<PrevisaoFinanceiraRelatorio["situacaoRepasse"], string> = {
+  AGUARDANDO_CONFIRMACAO: "Aguardando confirmação",
+  DISPONIVEL: "Disponível para solicitar",
+  EM_REPASSE: "Repasse em andamento",
+  PAGO: "Repasse registrado como pago",
+  PARCIAL: "Situação mista por procedimento",
 };
 
 type DadosRelatorioFinanceiro = {
@@ -238,6 +299,7 @@ type DadosRelatorioFinanceiro = {
     formasPagamento: Array<{ codigo: string; label: string }>;
   };
   resumo: {
+    previsoes: ResumoPrevisoes;
     movimentacoes: {
       total: number;
       quantidadeRecebimentos: number;
@@ -260,6 +322,7 @@ type DadosRelatorioFinanceiro = {
   };
   movimentacoes: MovimentacaoFinanceiraRelatorio[];
   repasses: RepasseFinanceiroRelatorio[];
+  previsoes: PrevisaoFinanceiraRelatorio[];
 };
 
 type FiltrosFinanceiros = {
@@ -425,6 +488,8 @@ const FILTROS_PRODUCAO_INICIAIS: FiltrosProducao = {
 const FORMAS_RECEBIMENTO = [
   ["TODAS", "Todas as formas"],
   ["PIX", "Pix"],
+  ["PIX_PARCELADO", "PIX parcelado"],
+  ["BOLETO", "Boleto"],
   ["DINHEIRO", "Dinheiro"],
   ["CARTAO_CREDITO", "Cartão de crédito"],
   ["CARTAO_DEBITO", "Cartão de débito"],
@@ -448,6 +513,20 @@ function moeda(valor: number) {
   });
 }
 
+// Valores financeiros acumulados em centavos para evitar diferenças de precisão.
+function somaMoeda<T>(itens: readonly T[], obterValor: (item: T) => number) {
+  const centavos = itens.reduce((acumulado, item) => acumulado + Math.round(Number(obterValor(item) || 0) * 100), 0);
+  return centavos / 100;
+}
+
+function somaQuantidade<T>(itens: readonly T[], obterValor: (item: T) => number) {
+  return itens.reduce((acumulado, item) => acumulado + Number(obterValor(item) || 0), 0);
+}
+
+function margemConsolidada(valor: number, resultado: number) {
+  return valor > 0 ? (resultado / valor) * 100 : 0;
+}
+
 function dataBr(valor: string | null | undefined, comHora = false) {
   if (!valor) return "-";
   const data = new Date(valor);
@@ -456,6 +535,18 @@ function dataBr(valor: string | null | undefined, comHora = false) {
     ? { dateStyle: "short", timeStyle: "short" }
     : { dateStyle: "short" }
   );
+}
+
+/**
+ * Datas financeiras são datas civis (DATE), não instantes de relógio.
+ * Um DATE serializado como 2026-10-28T00:00:00Z não pode ser convertido
+ * para o dia 27 no fuso de São Paulo.
+ */
+function dataFinanceiraBr(valor: string | null | undefined) {
+  if (!valor) return "-";
+  const partes = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(valor);
+  if (partes) return `${partes[3]}/${partes[2]}/${partes[1]}`;
+  return dataBr(valor);
 }
 
 function cpfBr(valor: string) {
@@ -490,6 +581,13 @@ function statusLabel(status: string) {
   return mapa[status] || status.replaceAll("_", " ");
 }
 
+function situacaoFinanceiraGuia(guia: GuiaRelatorio) {
+  const statusCobranca = statusLabel(guia.status);
+  return guia.autorizadoPorParcelamento
+    ? `${statusCobranca} • Voucher autorizado por parcelamento`
+    : statusCobranca;
+}
+
 function classeStatus(status: string) {
   if (["CONCLUIDO", "PAGA", "PAGO", "REALIZADO"].includes(status)) {
     return "bg-emerald-100 text-emerald-800";
@@ -502,6 +600,91 @@ function classeStatus(status: string) {
   }
   return "bg-sky-100 text-sky-800";
 }
+
+type ColunaTabela<T> = {
+  id: string;
+  titulo: string;
+  padrao?: boolean;
+  valor: (item: T) => string;
+  total?: (itens: T[]) => string;
+};
+
+function totaisColunas<T>(colunas: ColunaTabela<T>[], itens: T[]) {
+  return colunas.map((coluna, indice) => coluna.total?.(itens) ?? (indice === 0 ? `TOTAL DO FILTRO (${itens.length})` : ""));
+}
+
+function RodapeFinanceiro({ valores }: { valores: string[] }) {
+  return (
+    <tfoot className="border-t-2 border-xango-primary bg-purple-50 text-xs font-bold text-slate-900">
+      <tr>{valores.map((valor, indice) => (
+        <td key={indice} className={`${indice === 0 ? "break-words" : "whitespace-nowrap"} px-3 py-3 align-top tabular-nums`}>{valor}</td>
+      ))}</tr>
+    </tfoot>
+  );
+}
+
+const COLUNAS_MOVIMENTACOES: ColunaTabela<MovimentacaoFinanceiraRelatorio>[] = [
+  { id: "data", titulo: "Data efetiva", padrao: true, valor: (i) => dataFinanceiraBr(i.data) },
+  { id: "tipo", titulo: "Tipo", padrao: true, valor: (i) => statusLabel(i.tipo) },
+  { id: "paciente", titulo: "Paciente", padrao: true, valor: (i) => i.paciente },
+  { id: "cpf", titulo: "CPF", valor: (i) => cpfBr(i.cpf) },
+  { id: "telefone", titulo: "Telefone", valor: (i) => i.telefone || "-" },
+  { id: "voucher", titulo: "Voucher", padrao: true, valor: (i) => i.codigoVoucher || `#${i.guiaId}` },
+  { id: "atendimento", titulo: "Atendimento", valor: (i) => i.codigoAtendimento || `ATD #${i.atendimentoId}` },
+  { id: "clinica", titulo: "Clínica", padrao: true, valor: (i) => i.clinica },
+  { id: "forma", titulo: "Forma", padrao: true, valor: (i) => i.formaLabel },
+  { id: "valor", titulo: "Valor", padrao: true, valor: (i) => `${i.tipo === "ESTORNO" ? "- " : ""}${moeda(i.valor)}`, total: (itens) => moeda(somaMoeda(itens, (i) => (i.tipo === "ESTORNO" ? -1 : 1) * i.valor)) },
+  { id: "observacao", titulo: "Observação", valor: (i) => i.observacao || "-" },
+];
+
+const COLUNAS_REPASSES: ColunaTabela<RepasseFinanceiroRelatorio>[] = [
+  { id: "repasse", titulo: "Repasse", padrao: true, valor: (i) => i.codigoPublico },
+  { id: "clinica", titulo: "Clínica", padrao: true, valor: (i) => i.clinica },
+  { id: "guiasPacientes", titulo: "Guias / pacientes", padrao: true, valor: (i) => i.itens.map((g) => `${g.paciente} • ${g.codigoVoucher || `#${g.guiaId}`}`).join(" | ") || "-" },
+  { id: "quantidadeGuias", titulo: "Quantidade de guias", valor: (i) => String(i.quantidadeGuias), total: (itens) => String(somaQuantidade(itens, (i) => i.quantidadeGuias)) },
+  { id: "quantidadeProcedimentos", titulo: "Procedimentos vinculados", valor: (i) => i.quantidadeProcedimentos === null ? "Legado (sem individualização)" : String(i.quantidadeProcedimentos), total: (itens) => `${somaQuantidade(itens, (i) => i.quantidadeProcedimentos || 0)} individualizado(s)${itens.some((i) => i.quantidadeProcedimentos === null) ? " + históricos não individualizados" : ""}` },
+  { id: "procedimentos", titulo: "Exames vinculados", valor: (i) => i.itens.flatMap((item) => item.procedimentos || []).map((p) => p.nome).join(" | ") || "Legado (guia inteira)" },
+  { id: "status", titulo: "Status", padrao: true, valor: (i) => i.statusLabel },
+  { id: "solicitadoEm", titulo: "Solicitado em", padrao: true, valor: (i) => dataBr(i.solicitadoEm) },
+  { id: "pagamento", titulo: "Pagamento", padrao: true, valor: (i) => `${dataFinanceiraBr(i.dataPagamentoEfetivo || i.dataPagamentoSolicitada)}${i.dataPagamentoEfetivo ? " (efetivo)" : i.dataPagamentoSolicitada ? " (previsto)" : ""}` },
+  { id: "pagamentoSolicitado", titulo: "Pagamento solicitado", valor: (i) => dataFinanceiraBr(i.dataPagamentoSolicitada) },
+  { id: "pagamentoEfetivo", titulo: "Pagamento efetivo", valor: (i) => dataFinanceiraBr(i.dataPagamentoEfetivo) },
+  { id: "forma", titulo: "Forma", padrao: true, valor: (i) => i.formaPagamentoLabel || "-" },
+  { id: "valor", titulo: "Valor", padrao: true, valor: (i) => moeda(i.valorTotal), total: (itens) => moeda(somaMoeda(itens, (i) => i.valorTotal)) },
+  { id: "documentacao", titulo: "Documentação", padrao: true, valor: (i) => i.percentualDocumentacao === null ? "-" : `${i.percentualDocumentacao}%` },
+  { id: "solicitadoPor", titulo: "Solicitado por", valor: (i) => i.solicitadoPor || "-" },
+  { id: "motivoRecusa", titulo: "Motivo da recusa", valor: (i) => i.motivoRecusa || "-" },
+  { id: "observacoes", titulo: "Observações", valor: (i) => i.observacoes || "-" },
+];
+
+const COLUNAS_PREVISOES: ColunaTabela<PrevisaoFinanceiraRelatorio>[] = [
+  { id: "data", titulo: "Criação da guia", padrao: true, valor: (i) => dataBr(i.criadoEm) },
+  { id: "voucher", titulo: "Voucher", padrao: true, valor: (i) => i.codigoVoucher || `Guia #${i.guiaId}` },
+  { id: "paciente", titulo: "Paciente", padrao: true, valor: (i) => i.paciente },
+  { id: "cpf", titulo: "CPF", valor: (i) => cpfBr(i.cpf || "") },
+  { id: "clinica", titulo: "Clínica", padrao: true, valor: (i) => i.clinica },
+  { id: "situacao", titulo: "Situação do repasse", padrao: true, valor: (i) => SITUACOES_PREVISAO[i.situacaoRepasse] },
+  { id: "original", titulo: "Valor original", valor: (i) => moeda(i.valorOriginal), total: (itens) => moeda(somaMoeda(itens, (i) => i.valorOriginal)) },
+  { id: "desconto", titulo: "Desconto", valor: (i) => moeda(i.desconto), total: (itens) => moeda(somaMoeda(itens, (i) => i.desconto)) },
+  { id: "beneficio", titulo: "Benefício", valor: (i) => moeda(i.beneficio), total: (itens) => moeda(somaMoeda(itens, (i) => i.beneficio)) },
+  { id: "reducao", titulo: "Redução total", padrao: true, valor: (i) => moeda(i.reducaoTotal), total: (itens) => moeda(somaMoeda(itens, (i) => i.reducaoTotal)) },
+  { id: "cobrado", titulo: "Valor final", padrao: true, valor: (i) => moeda(i.valorFinal), total: (itens) => moeda(somaMoeda(itens, (i) => i.valorFinal)) },
+  { id: "recebido", titulo: "Recebido (menos estornos)", valor: (i) => moeda(i.recebido), total: (itens) => moeda(somaMoeda(itens, (i) => i.recebido)) },
+  { id: "aReceber", titulo: "Saldo a receber", valor: (i) => moeda(i.saldoReceber), total: (itens) => moeda(somaMoeda(itens, (i) => i.saldoReceber)) },
+  { id: "repasse", titulo: "Repasse contratado", padrao: true, valor: (i) => moeda(i.valorRepasse), total: (itens) => moeda(somaMoeda(itens, (i) => i.valorRepasse)) },
+  { id: "taxas", titulo: "Tarifas registradas", padrao: true, valor: (i) => moeda(i.tarifasRegistradas), total: (itens) => moeda(somaMoeda(itens, (i) => i.tarifasRegistradas)) },
+  { id: "margemBruta", titulo: "Margem bruta estimada", valor: (i) => moeda(i.margemBruta), total: (itens) => moeda(somaMoeda(itens, (i) => i.margemBruta)) },
+  { id: "margem", titulo: "Margem estimada", padrao: true, valor: (i) => moeda(i.margemEstimada), total: (itens) => moeda(somaMoeda(itens, (i) => i.margemEstimada)) },
+  { id: "margemPct", titulo: "Margem estimada (%)", valor: (i) => `${i.margemPercentual.toFixed(2)}%`, total: (itens) => percentual(margemConsolidada(somaMoeda(itens, (i) => i.valorFinal), somaMoeda(itens, (i) => i.margemEstimada))) },
+];
+
+function colunasPadrao<T>(colunas: ColunaTabela<T>[]) {
+  return colunas.filter((coluna) => coluna.padrao).map((coluna) => coluna.id);
+}
+
+const STORAGE_COLUNAS_MOVIMENTACOES = "digna-conect-v12-relatorios-colunas-movimentacoes";
+const STORAGE_COLUNAS_REPASSES = "digna-conect-v12-relatorios-colunas-repasses";
+const STORAGE_COLUNAS_PREVISOES = "digna-conect-v12-relatorios-colunas-previsoes";
 
 function csvCampo(valor: unknown) {
   const texto = String(valor ?? "").replaceAll('"', '""');
@@ -650,6 +833,10 @@ export default function RelatoriosPage() {
   const [paginaFinanceira, setPaginaFinanceira] = useState(1);
   const [movimentacaoSelecionada, setMovimentacaoSelecionada] = useState<MovimentacaoFinanceiraRelatorio | null>(null);
   const [repasseSelecionado, setRepasseSelecionado] = useState<RepasseFinanceiroRelatorio | null>(null);
+  const [colunasMovimentacoes, setColunasMovimentacoes] = useState<string[]>(() => colunasPadrao(COLUNAS_MOVIMENTACOES));
+  const [colunasRepasses, setColunasRepasses] = useState<string[]>(() => colunasPadrao(COLUNAS_REPASSES));
+  const [colunasPrevisoes, setColunasPrevisoes] = useState<string[]>(() => colunasPadrao(COLUNAS_PREVISOES));
+  const [seletorColunasAberto, setSeletorColunasAberto] = useState(false);
   const [abaProducao, setAbaProducao] = useState<AbaProducao>("CLINICAS");
   const [filtrosProducao, setFiltrosProducao] = useState<FiltrosProducao>(FILTROS_PRODUCAO_INICIAIS);
   const [dadosProducao, setDadosProducao] = useState<DadosRelatorioProducao | null>(null);
@@ -658,6 +845,52 @@ export default function RelatoriosPage() {
   const [paginaProducao, setPaginaProducao] = useState(1);
   const [clinicaProducaoSelecionada, setClinicaProducaoSelecionada] = useState<ProducaoClinica | null>(null);
   const [procedimentoProducaoSelecionado, setProcedimentoProducaoSelecionado] = useState<ProducaoProcedimento | null>(null);
+
+  useEffect(() => {
+    // Preferências locais; não afetam acesso aos dados nem consultas do servidor.
+    const lerPreferencia = (chave: string, idsDisponiveis: string[]) => {
+      try {
+        const ids = JSON.parse(window.localStorage.getItem(chave) || "null");
+        if (!Array.isArray(ids)) return null;
+        const validos = idsDisponiveis.filter((id) => ids.includes(id));
+        return validos.length ? validos : null;
+      } catch {
+        return null;
+      }
+    };
+    const movimentos = lerPreferencia(STORAGE_COLUNAS_MOVIMENTACOES, COLUNAS_MOVIMENTACOES.map((coluna) => coluna.id));
+    const repasses = lerPreferencia(STORAGE_COLUNAS_REPASSES, COLUNAS_REPASSES.map((coluna) => coluna.id));
+    const previsoes = lerPreferencia(STORAGE_COLUNAS_PREVISOES, COLUNAS_PREVISOES.map((coluna) => coluna.id));
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (movimentos) setColunasMovimentacoes(movimentos);
+    if (repasses) setColunasRepasses(repasses);
+    if (previsoes) setColunasPrevisoes(previsoes);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+
+  function alternarColunaFinanceira(id: string) {
+    const atuais = abaFinanceira === "MOVIMENTACOES" ? colunasMovimentacoes
+      : abaFinanceira === "REPASSES" ? colunasRepasses : colunasPrevisoes;
+    if (atuais.length === 1 && atuais.includes(id)) return;
+    const novos = atuais.includes(id) ? atuais.filter((item) => item !== id) : [...atuais, id];
+    if (abaFinanceira === "MOVIMENTACOES") setColunasMovimentacoes(novos);
+    else if (abaFinanceira === "REPASSES") setColunasRepasses(novos);
+    else setColunasPrevisoes(novos);
+    const chave = abaFinanceira === "MOVIMENTACOES" ? STORAGE_COLUNAS_MOVIMENTACOES
+      : abaFinanceira === "REPASSES" ? STORAGE_COLUNAS_REPASSES : STORAGE_COLUNAS_PREVISOES;
+    window.localStorage.setItem(chave, JSON.stringify(novos));
+  }
+
+  function restaurarColunasFinanceiras() {
+    const padrao = abaFinanceira === "MOVIMENTACOES" ? colunasPadrao(COLUNAS_MOVIMENTACOES)
+      : abaFinanceira === "REPASSES" ? colunasPadrao(COLUNAS_REPASSES) : colunasPadrao(COLUNAS_PREVISOES);
+    if (abaFinanceira === "MOVIMENTACOES") setColunasMovimentacoes(padrao);
+    else if (abaFinanceira === "REPASSES") setColunasRepasses(padrao);
+    else setColunasPrevisoes(padrao);
+    const chave = abaFinanceira === "MOVIMENTACOES" ? STORAGE_COLUNAS_MOVIMENTACOES
+      : abaFinanceira === "REPASSES" ? STORAGE_COLUNAS_REPASSES : STORAGE_COLUNAS_PREVISOES;
+    window.localStorage.setItem(chave, JSON.stringify(padrao));
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -781,6 +1014,7 @@ export default function RelatoriosPage() {
   }
 
   function trocarAbaFinanceira(aba: AbaFinanceira) {
+    setSeletorColunasAberto(false);
     setAbaFinanceira(aba);
     setMovimentacaoSelecionada(null);
     setRepasseSelecionado(null);
@@ -789,7 +1023,8 @@ export default function RelatoriosPage() {
 
   const itensFinanceirosAtivos = abaFinanceira === "MOVIMENTACOES"
     ? dadosFinanceiros?.movimentacoes || []
-    : dadosFinanceiros?.repasses || [];
+    : abaFinanceira === "REPASSES" ? dadosFinanceiros?.repasses || []
+    : dadosFinanceiros?.previsoes || [];
   const totalPaginasFinanceiras = Math.max(1, Math.ceil(itensFinanceirosAtivos.length / ITENS_POR_PAGINA));
 
   const movimentacoesPagina = useMemo(() => {
@@ -801,6 +1036,18 @@ export default function RelatoriosPage() {
     const inicio = (paginaFinanceira - 1) * ITENS_POR_PAGINA;
     return (dadosFinanceiros?.repasses || []).slice(inicio, inicio + ITENS_POR_PAGINA);
   }, [dadosFinanceiros?.repasses, paginaFinanceira]);
+  const previsoesPagina = useMemo(() => {
+    const inicio = (paginaFinanceira - 1) * ITENS_POR_PAGINA;
+    return (dadosFinanceiros?.previsoes || []).slice(inicio, inicio + ITENS_POR_PAGINA);
+  }, [dadosFinanceiros?.previsoes, paginaFinanceira]);
+
+  const colunasMovimentacoesVisiveis = COLUNAS_MOVIMENTACOES.filter((coluna) => colunasMovimentacoes.includes(coluna.id));
+  const colunasRepassesVisiveis = COLUNAS_REPASSES.filter((coluna) => colunasRepasses.includes(coluna.id));
+  const colunasPrevisoesVisiveis = COLUNAS_PREVISOES.filter((coluna) => colunasPrevisoes.includes(coluna.id));
+  const colunasFinanceirasDisponiveis = abaFinanceira === "MOVIMENTACOES" ? COLUNAS_MOVIMENTACOES
+    : abaFinanceira === "REPASSES" ? COLUNAS_REPASSES : COLUNAS_PREVISOES;
+  const idsColunasFinanceiras = abaFinanceira === "MOVIMENTACOES" ? colunasMovimentacoes
+    : abaFinanceira === "REPASSES" ? colunasRepasses : colunasPrevisoes;
 
 
   async function aplicarFiltrosProducao() {
@@ -896,6 +1143,7 @@ export default function RelatoriosPage() {
           moeda(item.recebidoLiquido),
           moeda(item.saldo),
         ]),
+        [totalAtendimentos[0], "", "", "", "", "", ...totalAtendimentos.slice(4)],
       ]);
       return;
     }
@@ -911,13 +1159,14 @@ export default function RelatoriosPage() {
         item.clinica.nome,
         item.unidade?.nome || "-",
         item.procedimentos.map((p) => p.nome).join(" | "),
-        statusLabel(item.status),
+        situacaoFinanceiraGuia(item),
         statusLabel(item.realizacao),
         moeda(item.valorFinal),
         moeda(item.recebidoLiquido),
         moeda(item.saldo),
         moeda(item.valorRepasse),
       ]),
+      [totalGuias[0], "", "", "", "", "", "", "", "", "", moeda(somaMoeda(guiasFiltradas, (i) => i.valorFinal)), moeda(somaMoeda(guiasFiltradas, (i) => i.recebidoLiquido)), moeda(somaMoeda(guiasFiltradas, (i) => i.saldo)), moeda(somaMoeda(guiasFiltradas, (i) => i.valorRepasse))],
     ]);
   }
 
@@ -929,10 +1178,17 @@ export default function RelatoriosPage() {
       return;
     }
 
+    const totalPdf = abaOperacional === "ATENDIMENTOS"
+      ? totalAtendimentos.slice()
+      : totalGuias.slice();
+    // Relatório PDF: a mesma ordem de colunas do cabeçalho da impressão.
+    const linhaTotalPdf = abaOperacional === "ATENDIMENTOS"
+      ? [totalPdf[0], "", "", "", "", totalPdf[4], totalPdf[5], totalPdf[6], totalPdf[7]]
+      : [totalPdf[0], "", "", "", "", "", "", totalPdf[7], totalPdf[8], totalPdf[9]];
     const titulo = abaOperacional === "ATENDIMENTOS" ? "Relatório de Atendimentos" : "Relatório de Guias / Vouchers";
     const cabecalho = abaOperacional === "ATENDIMENTOS"
       ? ["Atendimento", "Data", "Paciente", "Atendente", "Status", "Guias", "Valor", "Recebido", "Saldo"]
-      : ["Voucher", "Data", "Paciente", "Clínica", "Procedimentos", "Financeiro", "Realização", "Valor", "Saldo"];
+      : ["Voucher", "Data", "Paciente", "Clínica", "Procedimentos", "Financeiro", "Realização", "Valor", "Saldo", "Repasse previsto"];
     const linhas = abaOperacional === "ATENDIMENTOS"
       ? dados.atendimentos.map((item) => [
           item.codigoPublico || item.id,
@@ -951,16 +1207,17 @@ export default function RelatoriosPage() {
           item.paciente.nome,
           item.clinica.nome,
           item.procedimentos.map((p) => p.nome).join(", "),
-          statusLabel(item.status),
+          situacaoFinanceiraGuia(item),
           statusLabel(item.realizacao),
           moeda(item.valorFinal),
           moeda(item.saldo),
+          moeda(item.valorRepasse),
         ]);
 
     janela.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escaparHtml(titulo)}</title><style>
-      body{font-family:Arial,sans-serif;color:#17343a;padding:28px;font-size:11px}h1{font-size:20px;margin:0 0 6px}p{margin:0 0 18px;color:#64748b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d9e0e2;padding:7px;text-align:left;vertical-align:top}th{background:#f5f7f7;font-size:10px;text-transform:uppercase}tr:nth-child(even){background:#fafafa}@page{size:landscape;margin:12mm}</style></head><body>
+      body{font-family:Arial,sans-serif;color:#17343a;padding:28px;font-size:11px}h1{font-size:20px;margin:0 0 6px}p{margin:0 0 18px;color:#64748b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d9e0e2;padding:7px;text-align:left;vertical-align:top}th{background:#f5f7f7;font-size:10px;text-transform:uppercase}tr:nth-child(even){background:#fafafa}tfoot td{background:#f3e8ff!important;font-weight:700;border-top:2px solid #6b21a8}tfoot{display:table-row-group}@page{size:landscape;margin:12mm}</style></head><body>
       <h1>${escaparHtml(titulo)}</h1><p>Período: ${escaparHtml(filtros.inicio)} a ${escaparHtml(filtros.fim)} • Gerado em ${escaparHtml(new Date().toLocaleString("pt-BR"))}</p>
-      <table><thead><tr>${cabecalho.map((c) => `<th>${escaparHtml(c)}</th>`).join("")}</tr></thead><tbody>${linhas.map((linha) => `<tr>${linha.map((c) => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      <table><thead><tr>${cabecalho.map((c) => `<th>${escaparHtml(c)}</th>`).join("")}</tr></thead><tbody>${linhas.map((linha) => `<tr>${linha.map((c) => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody><tfoot><tr>${linhaTotalPdf.map((celula) => `<td>${escaparHtml(celula)}</td>`).join("")}</tr></tfoot></table>
       <script>window.onload=()=>{window.print();}</script></body></html>`);
     janela.document.close();
   }
@@ -971,38 +1228,26 @@ export default function RelatoriosPage() {
 
     if (abaFinanceira === "MOVIMENTACOES") {
       baixarCsv(`relatorio-recebimentos-estornos-${filtrosFinanceiros.inicio}-a-${filtrosFinanceiros.fim}.csv`, [
-        ["Data", "Tipo", "Paciente", "CPF", "Voucher", "Atendimento", "Clínica", "Forma", "Valor", "Observação"],
-        ...dadosFinanceiros.movimentacoes.map((item) => [
-          dataBr(item.data, true),
-          statusLabel(item.tipo),
-          item.paciente,
-          cpfBr(item.cpf),
-          item.codigoVoucher || String(item.guiaId),
-          item.codigoAtendimento || String(item.atendimentoId),
-          item.clinica,
-          item.formaLabel,
-          moeda(item.valor),
-          item.observacao || "",
-        ]),
+        colunasMovimentacoesVisiveis.map((coluna) => coluna.titulo),
+        ...dadosFinanceiros.movimentacoes.map((item) => colunasMovimentacoesVisiveis.map((coluna) => coluna.valor(item))),
+        totaisColunas(colunasMovimentacoesVisiveis, dadosFinanceiros.movimentacoes),
+      ]);
+      return;
+    }
+
+    if (abaFinanceira === "PREVISOES") {
+      baixarCsv(`relatorio-previsoes-margens-${filtrosFinanceiros.inicio}-a-${filtrosFinanceiros.fim}.csv`, [
+        colunasPrevisoesVisiveis.map((coluna) => coluna.titulo),
+        ...(dadosFinanceiros.previsoes || []).map((item) => colunasPrevisoesVisiveis.map((coluna) => coluna.valor(item))),
+        totaisColunas(colunasPrevisoesVisiveis, (dadosFinanceiros.previsoes || [])),
       ]);
       return;
     }
 
     baixarCsv(`relatorio-repasses-${filtrosFinanceiros.inicio}-a-${filtrosFinanceiros.fim}.csv`, [
-      ["Repasse", "Clínica", "Status", "Guias", "Solicitado em", "Pagamento solicitado", "Pagamento efetivo", "Forma", "Valor", "Documentação", "Motivo da recusa"],
-      ...dadosFinanceiros.repasses.map((item) => [
-        item.codigoPublico,
-        item.clinica,
-        item.statusLabel,
-        String(item.quantidadeGuias),
-        dataBr(item.solicitadoEm, true),
-        dataBr(item.dataPagamentoSolicitada),
-        dataBr(item.dataPagamentoEfetivo),
-        item.formaPagamentoLabel || "-",
-        moeda(item.valorTotal),
-        item.percentualDocumentacao === null ? "-" : `${item.percentualDocumentacao}%`,
-        item.motivoRecusa || "",
-      ]),
+      colunasRepassesVisiveis.map((coluna) => coluna.titulo),
+      ...dadosFinanceiros.repasses.map((item) => colunasRepassesVisiveis.map((coluna) => coluna.valor(item))),
+        totaisColunas(colunasRepassesVisiveis, dadosFinanceiros.repasses),
     ]);
   }
 
@@ -1014,37 +1259,28 @@ export default function RelatoriosPage() {
       return;
     }
 
+    const linhaTotalPdf = abaFinanceira === "MOVIMENTACOES"
+      ? totaisColunas(colunasMovimentacoesVisiveis, dadosFinanceiros.movimentacoes)
+      : abaFinanceira === "REPASSES"
+        ? totaisColunas(colunasRepassesVisiveis, dadosFinanceiros.repasses)
+        : totaisColunas(colunasPrevisoesVisiveis, dadosFinanceiros.previsoes || []);
     const titulo = abaFinanceira === "MOVIMENTACOES"
       ? "Relatório de Recebimentos e Estornos"
-      : "Relatório de Repasses às Clínicas";
+      : abaFinanceira === "REPASSES" ? "Relatório de Repasses às Clínicas"
+      : "Relatório de Previsões e Margens (não constitui pagamento)";
     const cabecalho = abaFinanceira === "MOVIMENTACOES"
-      ? ["Data", "Tipo", "Paciente", "Voucher", "Clínica", "Forma", "Valor"]
-      : ["Repasse", "Clínica", "Status", "Guias", "Solicitado", "Pagamento", "Valor", "Docs"];
+      ? colunasMovimentacoesVisiveis.map((coluna) => coluna.titulo)
+      : abaFinanceira === "REPASSES" ? colunasRepassesVisiveis.map((coluna) => coluna.titulo)
+      : colunasPrevisoesVisiveis.map((coluna) => coluna.titulo);
     const linhas = abaFinanceira === "MOVIMENTACOES"
-      ? dadosFinanceiros.movimentacoes.map((item) => [
-          dataBr(item.data, true),
-          statusLabel(item.tipo),
-          item.paciente,
-          item.codigoVoucher || item.guiaId,
-          item.clinica,
-          item.formaLabel,
-          moeda(item.valor),
-        ])
-      : dadosFinanceiros.repasses.map((item) => [
-          item.codigoPublico,
-          item.clinica,
-          item.statusLabel,
-          item.quantidadeGuias,
-          dataBr(item.solicitadoEm),
-          dataBr(item.dataPagamentoEfetivo || item.dataPagamentoSolicitada),
-          moeda(item.valorTotal),
-          item.percentualDocumentacao === null ? "-" : `${item.percentualDocumentacao}%`,
-        ]);
+      ? dadosFinanceiros.movimentacoes.map((item) => colunasMovimentacoesVisiveis.map((coluna) => coluna.valor(item)))
+      : abaFinanceira === "REPASSES" ? dadosFinanceiros.repasses.map((item) => colunasRepassesVisiveis.map((coluna) => coluna.valor(item)))
+      : (dadosFinanceiros.previsoes || []).map((item) => colunasPrevisoesVisiveis.map((coluna) => coluna.valor(item)));
 
     janela.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escaparHtml(titulo)}</title><style>
-      body{font-family:Arial,sans-serif;color:#17343a;padding:28px;font-size:11px}h1{font-size:20px;margin:0 0 6px}p{margin:0 0 18px;color:#64748b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d9e0e2;padding:7px;text-align:left;vertical-align:top}th{background:#f5f7f7;font-size:10px;text-transform:uppercase}tr:nth-child(even){background:#fafafa}@page{size:landscape;margin:12mm}</style></head><body>
+      body{font-family:Arial,sans-serif;color:#17343a;padding:28px;font-size:11px}h1{font-size:20px;margin:0 0 6px}p{margin:0 0 18px;color:#64748b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d9e0e2;padding:7px;text-align:left;vertical-align:top}th{background:#f5f7f7;font-size:10px;text-transform:uppercase}tr:nth-child(even){background:#fafafa}tfoot td{background:#f3e8ff!important;font-weight:700;border-top:2px solid #6b21a8}tfoot{display:table-row-group}@page{size:landscape;margin:12mm}</style></head><body>
       <h1>${escaparHtml(titulo)}</h1><p>Período: ${escaparHtml(filtrosFinanceiros.inicio)} a ${escaparHtml(filtrosFinanceiros.fim)} • Gerado em ${escaparHtml(new Date().toLocaleString("pt-BR"))}</p>
-      <table><thead><tr>${cabecalho.map((c) => `<th>${escaparHtml(c)}</th>`).join("")}</tr></thead><tbody>${linhas.map((linha) => `<tr>${linha.map((c) => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      <table><thead><tr>${cabecalho.map((c) => `<th>${escaparHtml(c)}</th>`).join("")}</tr></thead><tbody>${linhas.map((linha) => `<tr>${linha.map((c) => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody><tfoot><tr>${linhaTotalPdf.map((celula) => `<td>${escaparHtml(celula)}</td>`).join("")}</tr></tfoot></table>
       <script>window.onload=()=>{window.print();}</script></body></html>`);
     janela.document.close();
   }
@@ -1067,6 +1303,7 @@ export default function RelatoriosPage() {
           moeda(item.diferenca),
           percentual(item.margemPercentual),
         ]),
+        [totalProducaoClinicas[0], "", "", "", totalProducaoClinicas[3], ...totalProducaoClinicas.slice(4)],
       ]);
       return;
     }
@@ -1086,6 +1323,7 @@ export default function RelatoriosPage() {
         moeda(item.diferenca),
         percentual(item.margemPercentual),
       ]),
+      [totalProducaoProcedimentos[0], "", "", "", "", "", totalProducaoProcedimentos[3], ...totalProducaoProcedimentos.slice(4)],
     ]);
   }
 
@@ -1097,6 +1335,9 @@ export default function RelatoriosPage() {
       return;
     }
 
+    const linhaTotalPdf = abaProducao === "CLINICAS"
+      ? totalProducaoClinicas
+      : totalProducaoProcedimentos;
     const titulo = abaProducao === "CLINICAS"
       ? "Relatório de Produção por Clínica"
       : "Relatório de Produção por Procedimento";
@@ -1126,9 +1367,9 @@ export default function RelatoriosPage() {
         ]);
 
     janela.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escaparHtml(titulo)}</title><style>
-      body{font-family:Arial,sans-serif;color:#17343a;padding:28px;font-size:11px}h1{font-size:20px;margin:0 0 6px}p{margin:0 0 18px;color:#64748b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d9e0e2;padding:7px;text-align:left;vertical-align:top}th{background:#f5f7f7;font-size:10px;text-transform:uppercase}tr:nth-child(even){background:#fafafa}@page{size:landscape;margin:12mm}</style></head><body>
+      body{font-family:Arial,sans-serif;color:#17343a;padding:28px;font-size:11px}h1{font-size:20px;margin:0 0 6px}p{margin:0 0 18px;color:#64748b}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d9e0e2;padding:7px;text-align:left;vertical-align:top}th{background:#f5f7f7;font-size:10px;text-transform:uppercase}tr:nth-child(even){background:#fafafa}tfoot td{background:#f3e8ff!important;font-weight:700;border-top:2px solid #6b21a8}tfoot{display:table-row-group}@page{size:landscape;margin:12mm}</style></head><body>
       <h1>${escaparHtml(titulo)}</h1><p>Período de realização: ${escaparHtml(filtrosProducao.inicio)} a ${escaparHtml(filtrosProducao.fim)} • Gerado em ${escaparHtml(new Date().toLocaleString("pt-BR"))}</p>
-      <table><thead><tr>${cabecalho.map((c) => `<th>${escaparHtml(c)}</th>`).join("")}</tr></thead><tbody>${linhas.map((linha) => `<tr>${linha.map((c) => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      <table><thead><tr>${cabecalho.map((c) => `<th>${escaparHtml(c)}</th>`).join("")}</tr></thead><tbody>${linhas.map((linha) => `<tr>${linha.map((c) => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody><tfoot><tr>${linhaTotalPdf.map((celula) => `<td>${escaparHtml(celula)}</td>`).join("")}</tr></tfoot></table>
       <script>window.onload=()=>{window.print();}</script></body></html>`);
     janela.document.close();
   }
@@ -1151,6 +1392,42 @@ export default function RelatoriosPage() {
       alert(e instanceof Error ? e.message : "Não foi possível abrir o documento.");
     }
   }
+
+  // Todos os totais usam as linhas retornadas pelos filtros, nunca apenas as 25 da página.
+  const atendimentosFiltrados = dados?.atendimentos || [];
+  const guiasFiltradas = dados?.guias || [];
+  const clinicasFiltradas = dadosProducao?.clinicas || [];
+  const procedimentosFiltrados = dadosProducao?.procedimentos || [];
+
+  const totalAtendimentos = [
+    `TOTAL DO FILTRO (${atendimentosFiltrados.length})`, "", "", "",
+    String(somaQuantidade(atendimentosFiltrados, (i) => i.quantidadeGuias)),
+    moeda(somaMoeda(atendimentosFiltrados, (i) => i.valorGuias)),
+    moeda(somaMoeda(atendimentosFiltrados, (i) => i.recebidoLiquido)),
+    moeda(somaMoeda(atendimentosFiltrados, (i) => i.saldo)),
+  ];
+  const totalGuias = [
+    `TOTAL DO FILTRO (${guiasFiltradas.length})`, "", "", "", "", "", "",
+    moeda(somaMoeda(guiasFiltradas, (i) => i.valorFinal)),
+    moeda(somaMoeda(guiasFiltradas, (i) => i.saldo)),
+    moeda(somaMoeda(guiasFiltradas, (i) => i.valorRepasse)),
+  ];
+  const totalProducaoClinicas = [
+    `TOTAL DO FILTRO (${clinicasFiltradas.length})`, "", "",
+    String(somaQuantidade(clinicasFiltradas, (i) => i.quantidadeProcedimentos)),
+    moeda(somaMoeda(clinicasFiltradas, (i) => i.valorPaciente)),
+    moeda(somaMoeda(clinicasFiltradas, (i) => i.valorRepasse)),
+    moeda(somaMoeda(clinicasFiltradas, (i) => i.diferenca)),
+    percentual(margemConsolidada(somaMoeda(clinicasFiltradas, (i) => i.valorPaciente), somaMoeda(clinicasFiltradas, (i) => i.diferenca))),
+  ];
+  const totalProducaoProcedimentos = [
+    `TOTAL DO FILTRO (${procedimentosFiltrados.length})`, "", "",
+    String(somaQuantidade(procedimentosFiltrados, (i) => i.quantidade)),
+    moeda(somaMoeda(procedimentosFiltrados, (i) => i.valorPaciente)),
+    moeda(somaMoeda(procedimentosFiltrados, (i) => i.valorRepasse)),
+    moeda(somaMoeda(procedimentosFiltrados, (i) => i.diferenca)),
+    percentual(margemConsolidada(somaMoeda(procedimentosFiltrados, (i) => i.valorPaciente), somaMoeda(procedimentosFiltrados, (i) => i.diferenca))),
+  ];
 
   const resumoAtd = dados?.resumo.atendimentos;
   const resumoGuias = dados?.resumo.guias;
@@ -1323,6 +1600,7 @@ export default function RelatoriosPage() {
                         </tr>
                       ))}
                     </tbody>
+                    <RodapeFinanceiro valores={totalProducaoClinicas} />
                   </table>
                 </div>
               )
@@ -1356,13 +1634,14 @@ export default function RelatoriosPage() {
                       </tr>
                     ))}
                   </tbody>
+                    <RodapeFinanceiro valores={totalProducaoProcedimentos} />
                 </table>
               </div>
             )}
 
             {!carregandoProducao && itensProducaoAtivos.length > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
-                <p className="text-xs text-slate-500">Página {paginaProducao} de {totalPaginasProducao} • {itensProducaoAtivos.length} registro(s)</p>
+                <p className="text-xs text-slate-500">Página {paginaProducao} de {totalPaginasProducao} • {itensProducaoAtivos.length} registro(s) • Total do filtro na última linha da tabela</p>
                 <div className="flex items-center gap-2">
                   <button type="button" disabled={paginaProducao <= 1} onClick={() => setPaginaProducao((p) => Math.max(1, p - 1))} className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40"><ChevronLeft size={17} /></button>
                   <button type="button" disabled={paginaProducao >= totalPaginasProducao} onClick={() => setPaginaProducao((p) => Math.min(totalPaginasProducao, p + 1))} className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40"><ChevronRight size={17} /></button>
@@ -1389,8 +1668,37 @@ export default function RelatoriosPage() {
               >
                 Repasses às clínicas
               </button>
+              <button
+                type="button"
+                onClick={() => trocarAbaFinanceira("PREVISOES")}
+                className={`border-b-2 px-1 pb-3 text-sm font-semibold ${abaFinanceira === "PREVISOES" ? "border-xango-primary text-xango-primary" : "border-transparent text-slate-500"}`}
+              >
+                Previsões e margens
+              </button>
             </div>
             <div className="mb-2 flex flex-wrap gap-2">
+              <div className="relative z-20">
+                <button type="button" aria-expanded={seletorColunasAberto} onClick={() => setSeletorColunasAberto((aberto) => !aberto)} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                  <ClipboardList size={16} /> Colunas ({idsColunasFinanceiras.length}/{colunasFinanceirasDisponiveis.length})
+                </button>
+                {seletorColunasAberto && (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-72 max-h-[70vh] overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+                    <p className="mb-2 text-xs font-semibold text-slate-700">Exibir na tabela, CSV e PDF</p>
+                    <div className="space-y-1">
+                      {colunasFinanceirasDisponiveis.map((coluna) => (
+                        <label key={coluna.id} className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                          <input type="checkbox" checked={idsColunasFinanceiras.includes(coluna.id)} onChange={() => alternarColunaFinanceira(coluna.id)} disabled={idsColunasFinanceiras.length === 1 && idsColunasFinanceiras.includes(coluna.id)} className="h-4 w-4 accent-violet-700" />
+                          <span>{coluna.titulo}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex justify-between gap-2 border-t border-slate-100 pt-3">
+                      <button type="button" onClick={restaurarColunasFinanceiras} className="text-xs font-semibold text-xango-primary hover:underline">Restaurar padrão</button>
+                      <button type="button" onClick={() => setSeletorColunasAberto(false)} className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">Fechar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
               <button type="button" onClick={exportarCsvFinanceiro} disabled={!dadosFinanceiros || carregandoFinanceiro} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
                 <FileSpreadsheet size={16} /> Exportar CSV
               </button>
@@ -1433,7 +1741,7 @@ export default function RelatoriosPage() {
                     </select>
                   </label>
                 </>
-              ) : (
+              ) : abaFinanceira === "REPASSES" ? (
                 <>
                   <label className="lg:col-span-2">
                     <span className="mb-1 block text-xs font-semibold text-slate-600">Período por</span>
@@ -1454,13 +1762,17 @@ export default function RelatoriosPage() {
                     </select>
                   </label>
                 </>
+              ) : (
+                <div className="flex items-center text-xs text-slate-500 lg:col-span-5">
+                  Período pela criação da guia. Os valores são previsões, independentemente da data de recebimento.
+                </div>
               )}
 
               <label className="lg:col-span-9">
                 <span className="mb-1 block text-xs font-semibold text-slate-600">Busca</span>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
-                  <input value={filtrosFinanceiros.busca} onChange={(e) => setFiltrosFinanceiros((atual) => ({ ...atual, busca: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") void aplicarFiltrosFinanceiros(); }} placeholder={abaFinanceira === "MOVIMENTACOES" ? "Paciente, CPF, voucher, atendimento, clínica ou observação..." : "Repasse, clínica, paciente, CPF ou voucher..."} className="w-full rounded-lg border border-slate-300 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-xango-primary" />
+                  <input value={filtrosFinanceiros.busca} onChange={(e) => setFiltrosFinanceiros((atual) => ({ ...atual, busca: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") void aplicarFiltrosFinanceiros(); }} placeholder={abaFinanceira === "MOVIMENTACOES" ? "Paciente, CPF, voucher, atendimento, clínica ou observação..." : abaFinanceira === "REPASSES" ? "Repasse, clínica, paciente, CPF ou voucher..." : "Paciente, CPF, voucher, atendimento ou clínica..."} className="w-full rounded-lg border border-slate-300 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-xango-primary" />
                 </div>
               </label>
               <div className="flex items-end gap-2 lg:col-span-3">
@@ -1481,20 +1793,39 @@ export default function RelatoriosPage() {
               <CardResumo titulo="Recebido líquido" valor={moeda(dadosFinanceiros?.resumo.movimentacoes.recebidoLiquido || 0)} detalhe="recebimentos menos estornos" icone={<CheckCircle2 size={20} />} />
               <CardResumo titulo="Movimentações" valor={String(dadosFinanceiros?.resumo.movimentacoes.total || 0)} detalhe="no período filtrado" icone={<Activity size={20} />} />
             </div>
-          ) : (
+          ) : abaFinanceira === "REPASSES" ? (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <CardResumo titulo="Repasses" valor={moeda(dadosFinanceiros?.resumo.repasses.valorTotal || 0)} detalhe={`${dadosFinanceiros?.resumo.repasses.total || 0} registro(s)`} icone={<CircleDollarSign size={20} />} />
               <CardResumo titulo="Pendentes" valor={moeda(dadosFinanceiros?.resumo.repasses.valorPendente || 0)} detalhe={`${dadosFinanceiros?.resumo.repasses.pendentes || 0} aguardando conclusão`} icone={<CalendarDays size={20} />} />
               <CardResumo titulo="Pagos" valor={moeda(dadosFinanceiros?.resumo.repasses.valorPago || 0)} detalhe={`${dadosFinanceiros?.resumo.repasses.pagos || 0} repasse(s) pago(s)`} icone={<CheckCircle2 size={20} />} />
               <CardResumo titulo="Documentação 100%" valor={String(dadosFinanceiros?.resumo.repasses.documentacaoCompleta || 0)} detalhe={`${dadosFinanceiros?.resumo.repasses.recusados || 0} recusado(s) no filtro`} icone={<FileText size={20} />} />
             </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <CardResumo titulo="Valor final das guias" valor={moeda(dadosFinanceiros?.resumo.previsoes?.valorFinal || 0)} detalhe={`${dadosFinanceiros?.resumo.previsoes?.totalGuias || 0} guia(s) criadas no período`} icone={<CircleDollarSign size={20} />} />
+                <CardResumo titulo="Repasse contratado" valor={moeda(dadosFinanceiros?.resumo.previsoes?.valorRepasse || 0)} detalhe="Ainda não significa repasse solicitado ou pago" icone={<CalendarDays size={20} />} />
+                <CardResumo titulo="Tarifas registradas" valor={moeda(dadosFinanceiros?.resumo.previsoes?.tarifasRegistradas || 0)} detalhe="Somente taxas de recebimentos já lançados" icone={<Activity size={20} />} />
+                <CardResumo titulo="Margem estimada" valor={moeda(dadosFinanceiros?.resumo.previsoes?.margemEstimada || 0)} detalhe="Antes de despesas operacionais e tarifas futuras" icone={<CheckCircle2 size={20} />} />
+              </div>
+              <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <p><span className="text-slate-500">A confirmar: </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.aConfirmar || 0)}</strong></p>
+                <p><span className="text-slate-500">Disponível para solicitar: </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.disponivelSolicitacao || 0)}</strong></p>
+                <p><span className="text-slate-500">Em repasse: </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.emRepasse || 0)}</strong></p>
+                <p><span className="text-slate-500">Repasse registrado como pago: </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.registradoPago || 0)}</strong></p>
+                <p><span className="text-slate-500">Descontos/benefícios (redução total): </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.reducaoTotal || 0)}</strong></p>
+                <p><span className="text-slate-500">Recebido líquido de estornos: </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.recebido || 0)}</strong></p>
+                <p><span className="text-slate-500">Saldo a receber: </span><strong>{moeda(dadosFinanceiros?.resumo.previsoes?.saldoReceber || 0)}</strong></p>
+              </div>
+              <p className="text-xs text-slate-500">Critério: guias criadas no período filtrado. Repasse contratado usa os valores gravados nos procedimentos ativos. Margem = valor final − repasse contratado − tarifas efetivamente registradas. Não é lucro realizado: não inclui despesas operacionais, inadimplência nem tarifas futuras.</p>
+            </div>
           )}
 
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
               <div>
-                <h2 className="font-semibold text-slate-900">{abaFinanceira === "MOVIMENTACOES" ? "Recebimentos e estornos do período" : "Repasses às clínicas"}</h2>
-                <p className="mt-1 text-xs text-slate-500">Clique em uma linha para visualizar os detalhes antes de abrir o registro relacionado.</p>
+                <h2 className="font-semibold text-slate-900">{abaFinanceira === "MOVIMENTACOES" ? "Recebimentos e estornos do período" : abaFinanceira === "REPASSES" ? "Repasses às clínicas" : "Previsões e margens por guia"}</h2>
+                <p className="mt-1 text-xs text-slate-500">{abaFinanceira === "PREVISOES" ? "Clique em uma linha para abrir o atendimento. Previsões não são pagamentos ou repasses autorizados." : "Clique em uma linha para visualizar os detalhes antes de abrir o registro relacionado."}</p>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{itensFinanceirosAtivos.length} registro(s)</span>
             </div>
@@ -1503,142 +1834,85 @@ export default function RelatoriosPage() {
               <div className="px-6 py-16 text-center text-sm text-slate-500">Carregando relatório financeiro...</div>
             ) : abaFinanceira === "MOVIMENTACOES" ? (
               movimentacoesPagina.length === 0 ? <Vazio /> : (
-                <div className="w-full overflow-hidden">
-                  <table className="w-full table-fixed text-left">
-                    <colgroup>
-                      <col className="w-[13%]" /><col className="w-[11%]" /><col className="w-[20%]" /><col className="w-[14%]" /><col className="w-[18%]" /><col className="w-[13%]" /><col className="w-[11%]" />
-                    </colgroup>
-                    <thead className="bg-slate-50"><tr><Th>Data</Th><Th>Tipo</Th><Th>Paciente</Th><Th>Voucher</Th><Th>Clínica</Th><Th>Forma</Th><Th>Valor</Th></tr></thead>
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full text-left" style={{ minWidth: `${Math.max(7, colunasMovimentacoesVisiveis.length) * 140}px` }}>
+                    <thead className="bg-slate-50"><tr>
+                      {colunasMovimentacoesVisiveis.map((coluna) => <Th key={coluna.id}>{coluna.titulo}</Th>)}
+                    </tr></thead>
                     <tbody className="divide-y divide-slate-100">
                       {movimentacoesPagina.map((item) => (
                         <tr key={item.id} onClick={() => setMovimentacaoSelecionada(item)} className="cursor-pointer align-top transition hover:bg-slate-50">
-                          <Td><span className="text-xs">{dataBr(item.data, true)}</span></Td>
-                          <Td><span className={`inline-flex max-w-full whitespace-normal rounded-full px-2 py-1 text-[11px] font-semibold leading-tight ${classeStatus(item.tipo)}`}>{statusLabel(item.tipo)}</span></Td>
-                          <Td><p className="break-words font-semibold text-slate-800">{item.paciente}</p><p className="mt-1 text-[11px] text-slate-500">{cpfBr(item.cpf)}</p></Td>
-                          <Td><p className="break-words font-semibold text-xango-primary">{item.codigoVoucher || `#${item.guiaId}`}</p><p className="mt-1 break-words text-[11px] text-slate-500">{item.codigoAtendimento || `ATD #${item.atendimentoId}`}</p></Td>
-                          <Td><span className="break-words">{item.clinica}</span></Td>
-                          <Td><span className="break-words text-xs">{item.formaLabel}</span></Td>
-                          <Td className={`break-words font-semibold ${item.tipo === "ESTORNO" ? "text-red-700" : "text-emerald-700"}`}>{item.tipo === "ESTORNO" ? "- " : ""}{moeda(item.valor)}</Td>
+                          {colunasMovimentacoesVisiveis.map((coluna) => (
+                            <Td key={coluna.id} className={`${coluna.id === "valor" ? `font-semibold tabular-nums ${item.tipo === "ESTORNO" ? "text-red-700" : "text-emerald-700"}` : ""} break-words`}>
+                              {coluna.id === "tipo" ? (
+                                <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-semibold ${classeStatus(item.tipo)}`}>{coluna.valor(item)}</span>
+                              ) : coluna.id === "voucher" ? (
+                                <span className="font-semibold text-xango-primary">{coluna.valor(item)}</span>
+                              ) : (
+                                coluna.valor(item)
+                              )}
+                            </Td>
+                          ))}
                         </tr>
                       ))}
                     </tbody>
+                    <RodapeFinanceiro valores={totaisColunas(colunasMovimentacoesVisiveis, dadosFinanceiros?.movimentacoes || [])} />
                   </table>
                 </div>
               )
-            ) : repassesPagina.length === 0 ? <Vazio /> : (
-              <div className="w-full overflow-hidden">
-                <table className="w-full table-fixed text-left">
-                  <colgroup>
-                    <col className="w-[14%]" />
-                    <col className="w-[14%]" />
-                    <col className="w-[22%]" />
-                    <col className="w-[10%]" />
-                    <col className="w-[10%]" />
-                    <col className="w-[11%]" />
-                    <col className="w-[7%]" />
-                    <col className="w-[8%]" />
-                    <col className="w-[4%]" />
-                  </colgroup>
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <Th>Repasse</Th>
-                      <Th>Clínica</Th>
-                      <Th>Guias / Pacientes</Th>
-                      <Th>Status</Th>
-                      <Th>Solicitado</Th>
-                      <Th>Pagamento</Th>
-                      <Th>Forma</Th>
-                      <Th>Valor</Th>
-                      <Th>Docs</Th>
-                    </tr>
-                  </thead>
+            ) : abaFinanceira === "REPASSES" ? (repassesPagina.length === 0 ? <Vazio /> : (
+              <div className="w-full overflow-x-auto">
+                <table className="w-full text-left" style={{ minWidth: `${Math.max(8, colunasRepassesVisiveis.length) * 140}px` }}>
+                  <thead className="bg-slate-50"><tr>
+                    {colunasRepassesVisiveis.map((coluna) => <Th key={coluna.id}>{coluna.titulo}</Th>)}
+                  </tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {repassesPagina.map((item) => (
-                      <tr
-                        key={item.id}
-                        onClick={() => setRepasseSelecionado(item)}
-                        className="cursor-pointer align-middle transition hover:bg-slate-50"
-                      >
-                        <Td>
-                          <p className="break-words font-semibold leading-tight text-xango-primary">
-                            {item.codigoPublico}
-                          </p>
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            {item.quantidadeGuias} guia(s)
-                          </p>
-                        </Td>
-                        <Td>
-                          <span className="break-words font-medium leading-tight text-slate-800">
-                            {item.clinica}
-                          </span>
-                        </Td>
-                        <Td>
-                          <div className="space-y-1">
-                            {item.itens.slice(0, 2).map((guia) => (
-                              <p key={guia.id} className="break-words text-xs leading-tight">
-                                {guia.paciente} • {guia.codigoVoucher || `#${guia.guiaId}`}
-                              </p>
-                            ))}
-                            {item.itens.length > 2 && (
-                              <p className="text-[11px] text-slate-500">
-                                + {item.itens.length - 2} guia(s)
-                              </p>
+                      <tr key={item.id} onClick={() => setRepasseSelecionado(item)} className="cursor-pointer align-top transition hover:bg-slate-50">
+                        {colunasRepassesVisiveis.map((coluna) => (
+                          <Td key={coluna.id} className={`${coluna.id === "valor" ? "font-semibold tabular-nums" : ""} break-words`}>
+                            {coluna.id === "status" ? (
+                              <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-semibold ${classeStatus(item.status)}`}>{coluna.valor(item)}</span>
+                            ) : coluna.id === "repasse" ? (
+                              <span className="font-semibold text-xango-primary">{coluna.valor(item)}</span>
+                            ) : (
+                              coluna.valor(item)
                             )}
-                          </div>
-                        </Td>
-                        <Td>
-                          <span
-                            className={`inline-flex max-w-full whitespace-normal rounded-full px-2 py-1 text-[11px] font-semibold leading-tight ${classeStatus(item.status)}`}
-                          >
-                            {item.statusLabel}
-                          </span>
-                        </Td>
-                        <Td>
-                          <span className="whitespace-nowrap text-xs">
-                            {dataBr(item.solicitadoEm)}
-                          </span>
-                        </Td>
-                        <Td>
-                          <p className="whitespace-nowrap text-xs">
-                            {dataBr(item.dataPagamentoEfetivo || item.dataPagamentoSolicitada)}
-                          </p>
-                          {item.dataPagamentoEfetivo && (
-                            <p className="mt-1 text-[10px] text-slate-500">Efetivo</p>
-                          )}
-                        </Td>
-                        <Td>
-                          <span className="break-words text-xs">
-                            {item.formaPagamentoLabel || "-"}
-                          </span>
-                        </Td>
-                        <Td className="whitespace-nowrap text-xs font-semibold tabular-nums">
-                          {moeda(item.valorTotal)}
-                        </Td>
-                        <Td>
-                          <span
-                            className={`whitespace-nowrap text-xs font-semibold ${
-                              item.percentualDocumentacao === 100
-                                ? "text-emerald-700"
-                                : item.percentualDocumentacao === null
-                                  ? "text-slate-400"
-                                  : "text-amber-700"
-                            }`}
-                          >
-                            {item.percentualDocumentacao === null
-                              ? "-"
-                              : `${item.percentualDocumentacao}%`}
-                          </span>
-                        </Td>
+                          </Td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
+                    <RodapeFinanceiro valores={totaisColunas(colunasRepassesVisiveis, dadosFinanceiros?.repasses || [])} />
+                </table>
+              </div>
+            )) : previsoesPagina.length === 0 ? <Vazio /> : (
+              <div className="w-full overflow-x-auto">
+                <table className="w-full text-left" style={{ minWidth: `${Math.max(8, colunasPrevisoesVisiveis.length) * 145}px` }}>
+                  <thead className="bg-slate-50"><tr>
+                    {colunasPrevisoesVisiveis.map((coluna) => <Th key={coluna.id}>{coluna.titulo}</Th>)}
+                  </tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {previsoesPagina.map((item) => (
+                      <tr key={item.guiaId} onClick={() => router.push(`/atendimentos/${item.atendimentoId}`)} className="cursor-pointer align-top transition hover:bg-slate-50">
+                        {colunasPrevisoesVisiveis.map((coluna) => (
+                          <Td key={coluna.id} className={`${["margem", "repasse", "cobrado"].includes(coluna.id) ? "font-semibold tabular-nums" : ""} break-words`}>
+                            {coluna.id === "situacao" ? (
+                              <span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">{coluna.valor(item)}</span>
+                            ) : coluna.valor(item)}
+                          </Td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                    <RodapeFinanceiro valores={totaisColunas(colunasPrevisoesVisiveis, dadosFinanceiros?.previsoes || [])} />
                 </table>
               </div>
             )}
 
             {!carregandoFinanceiro && itensFinanceirosAtivos.length > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
-                <p className="text-xs text-slate-500">Página {paginaFinanceira} de {totalPaginasFinanceiras} • {itensFinanceirosAtivos.length} registro(s)</p>
+                <p className="text-xs text-slate-500">Página {paginaFinanceira} de {totalPaginasFinanceiras} • {itensFinanceirosAtivos.length} registro(s) • Total do filtro na última linha da tabela</p>
                 <div className="flex items-center gap-2">
                   <button type="button" disabled={paginaFinanceira <= 1} onClick={() => setPaginaFinanceira((p) => Math.max(1, p - 1))} className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40"><ChevronLeft size={17} /></button>
                   <button type="button" disabled={paginaFinanceira >= totalPaginasFinanceiras} onClick={() => setPaginaFinanceira((p) => Math.min(totalPaginasFinanceiras, p + 1))} className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40"><ChevronRight size={17} /></button>
@@ -1760,7 +2034,7 @@ export default function RelatoriosPage() {
               <CardResumo titulo="Guias / Vouchers" valor={String(resumoGuias?.total || 0)} detalhe="no período filtrado" icone={<FileText size={20} />} />
               <CardResumo titulo="Realizadas" valor={String(resumoGuias?.realizadas || 0)} detalhe={`${resumoGuias?.aguardandoRealizacao || 0} aguardando realização`} icone={<Stethoscope size={20} />} />
               <CardResumo titulo="Valor cobrado" valor={moeda(resumoGuias?.valorCobrado || 0)} detalhe={`${moeda(resumoGuias?.recebidoLiquido || 0)} recebido líquido`} icone={<CircleDollarSign size={20} />} />
-              <CardResumo titulo="Repasse previsto" valor={moeda(resumoGuias?.repassePrevisto || 0)} detalhe={`${moeda(resumoGuias?.saldo || 0)} ainda a receber`} icone={<CalendarDays size={20} />} />
+              <CardResumo titulo="Repasse previsto" valor={moeda(resumoGuias?.repassePrevisto || 0)} detalhe="Valor contratado com a clínica; não significa pagamento" icone={<CalendarDays size={20} />} />
             </div>
           )}
 
@@ -1803,25 +2077,27 @@ export default function RelatoriosPage() {
                         </tr>
                       ))}
                     </tbody>
+                    <RodapeFinanceiro valores={totalAtendimentos} />
                   </table>
                 </div>
               )
             ) : guiasPagina.length === 0 ? <Vazio /> : (
-              <div className="w-full overflow-hidden">
-                <table className="w-full table-fixed text-left">
+              <div className="w-full overflow-x-auto">
+                <table className="w-full min-w-[1260px] table-fixed text-left">
                   <colgroup>
                     <col className="w-[12%]" />
-                    <col className="w-[16%]" />
+                    <col className="w-[15%]" />
                     <col className="w-[13%]" />
-                    <col className="w-[17%]" />
+                    <col className="w-[14%]" />
                     <col className="w-[9%]" />
                     <col className="w-[10%]" />
-                    <col className="w-[10%]" />
-                    <col className="w-[7%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[6%]" />
                     <col className="w-[6%]" />
                   </colgroup>
                   <thead className="bg-slate-50"><tr>
-                    <Th>Voucher</Th><Th>Paciente</Th><Th>Clínica / Unidade</Th><Th>Procedimento(s)</Th><Th>Agendamento</Th><Th>Financeiro</Th><Th>Realização</Th><Th>Valor</Th><Th>Saldo</Th>
+                    <Th>Voucher</Th><Th>Paciente</Th><Th>Clínica / Unidade</Th><Th>Procedimento(s)</Th><Th>Agendamento</Th><Th>Financeiro</Th><Th>Realização</Th><Th>Valor</Th><Th>Saldo</Th><Th>Repasse previsto</Th>
                   </tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {guiasPagina.map((item) => (
@@ -1831,19 +2107,24 @@ export default function RelatoriosPage() {
                         <Td><p className="break-words font-medium text-slate-800">{item.clinica.nome}</p><p className="mt-1 break-words text-[11px] leading-tight text-slate-500">{item.unidade?.nome || "Sem unidade"}</p></Td>
                         <Td><div className="space-y-1">{item.procedimentos.slice(0, 2).map((p) => <p key={p.id} className="break-words text-xs leading-tight">{p.nome}</p>)}{item.procedimentos.length > 2 && <p className="text-[11px] text-slate-500">+ {item.procedimentos.length - 2} procedimento(s)</p>}</div></Td>
                         <Td><span className="text-xs">{dataBr(item.dataAgendamento || item.criadoEm)}</span></Td>
-                        <Td><span className={`inline-flex max-w-full whitespace-normal rounded-full px-2 py-1 text-[11px] font-semibold leading-tight ${classeStatus(item.status)}`}>{statusLabel(item.status)}</span></Td>
+                        <Td>
+                          <span className={`inline-flex max-w-full whitespace-normal rounded-full px-2 py-1 text-[11px] font-semibold leading-tight ${classeStatus(item.status)}`}>{statusLabel(item.status)}</span>
+                          {item.autorizadoPorParcelamento && <span className="mt-1 block text-[11px] font-semibold text-emerald-700">Voucher autorizado por parcelamento</span>}
+                        </Td>
                         <Td><span className={`inline-flex max-w-full whitespace-normal rounded-full px-2 py-1 text-[11px] font-semibold leading-tight ${classeStatus(item.realizacao)}`}>{statusLabel(item.realizacao)}</span></Td>
                         <Td className="break-words text-xs font-semibold">{moeda(item.valorFinal)}</Td><Td className={`${item.saldo > 0.009 ? "font-semibold text-amber-700" : "font-semibold text-emerald-700"} break-words text-xs`}>{moeda(item.saldo)}</Td>
+                        <Td className="break-words text-xs font-semibold text-slate-700">{moeda(item.valorRepasse)}</Td>
                       </tr>
                     ))}
                   </tbody>
+                    <RodapeFinanceiro valores={totalGuias} />
                 </table>
               </div>
             )}
 
             {!carregando && itensAtivos.length > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
-                <p className="text-xs text-slate-500">Página {pagina} de {totalPaginas} • {itensAtivos.length} registro(s)</p>
+                <p className="text-xs text-slate-500">Página {pagina} de {totalPaginas} • {itensAtivos.length} registro(s) • Total do filtro na última linha da tabela</p>
                 <div className="flex items-center gap-2">
                   <button type="button" disabled={pagina <= 1} onClick={() => setPagina((p) => Math.max(1, p - 1))} className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40"><ChevronLeft size={17} /></button>
                   <button type="button" disabled={pagina >= totalPaginas} onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))} className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40"><ChevronRight size={17} /></button>
@@ -1946,7 +2227,7 @@ export default function RelatoriosPage() {
               <section className="grid gap-3 sm:grid-cols-2">
                 <InfoResumo titulo="Clínica" valor={guiaSelecionada.clinica.nome} detalhe={guiaSelecionada.unidade?.nome || "Sem unidade"} />
                 <InfoResumo titulo="Agendamento" valor={dataBr(guiaSelecionada.dataAgendamento || guiaSelecionada.criadoEm)} />
-                <InfoResumo titulo="Financeiro" valor={statusLabel(guiaSelecionada.status)} />
+                <InfoResumo titulo="Financeiro" valor={statusLabel(guiaSelecionada.status)} detalhe={guiaSelecionada.autorizadoPorParcelamento ? "Voucher autorizado por parcelamento; saldo ainda não recebido" : undefined} />
                 <InfoResumo titulo="Realização" valor={statusLabel(guiaSelecionada.realizacao)} />
                 <InfoResumo titulo="Valor da guia" valor={moeda(guiaSelecionada.valorFinal)} />
                 <InfoResumo titulo="Recebido líquido" valor={moeda(guiaSelecionada.recebidoLiquido)} />
@@ -2000,7 +2281,7 @@ export default function RelatoriosPage() {
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Movimentação financeira</p>
                 <h3 className="mt-1 text-xl font-semibold text-slate-900">{statusLabel(movimentacaoSelecionada.tipo)}</h3>
-                <p className="mt-1 text-sm text-slate-500">{dataBr(movimentacaoSelecionada.data, true)}</p>
+                <p className="mt-1 text-sm text-slate-500">{dataFinanceiraBr(movimentacaoSelecionada.data)}</p>
               </div>
               <button type="button" aria-label="Fechar" onClick={() => setMovimentacaoSelecionada(null)} className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50">
                 <X size={18} />
@@ -2071,13 +2352,14 @@ export default function RelatoriosPage() {
                 <InfoResumo titulo="Status" valor={repasseSelecionado.statusLabel} />
                 <InfoResumo titulo="Valor total" valor={moeda(repasseSelecionado.valorTotal)} />
                 <InfoResumo titulo="Solicitado em" valor={dataBr(repasseSelecionado.solicitadoEm, true)} detalhe={repasseSelecionado.solicitadoPor ? `Por ${repasseSelecionado.solicitadoPor}` : undefined} />
-                <InfoResumo titulo="Pagamento solicitado" valor={dataBr(repasseSelecionado.dataPagamentoSolicitada)} />
-                <InfoResumo titulo="Pagamento efetivo" valor={dataBr(repasseSelecionado.dataPagamentoEfetivo)} detalhe={repasseSelecionado.pagoPor ? `Registrado por ${repasseSelecionado.pagoPor}` : undefined} />
+                <InfoResumo titulo="Pagamento solicitado" valor={dataFinanceiraBr(repasseSelecionado.dataPagamentoSolicitada)} />
+                <InfoResumo titulo="Pagamento efetivo" valor={dataFinanceiraBr(repasseSelecionado.dataPagamentoEfetivo)} detalhe={repasseSelecionado.pagoPor ? `Registrado por ${repasseSelecionado.pagoPor}` : undefined} />
                 <InfoResumo titulo="Forma de pagamento" valor={repasseSelecionado.formaPagamentoLabel || "-"} />
                 {repasseSelecionado.status === "PAGO" && (
                   <InfoResumo titulo="Documentação" valor={`${repasseSelecionado.percentualDocumentacao || 0}%`} destaque={(repasseSelecionado.percentualDocumentacao || 0) < 100} />
                 )}
                 <InfoResumo titulo="Guias" valor={String(repasseSelecionado.quantidadeGuias)} />
+                <InfoResumo titulo="Procedimentos vinculados" valor={repasseSelecionado.quantidadeProcedimentos === null ? "Legado (guia inteira)" : String(repasseSelecionado.quantidadeProcedimentos)} />
               </section>
 
               {repasseSelecionado.motivoRecusa && (
@@ -2111,6 +2393,15 @@ export default function RelatoriosPage() {
                         <div>
                           <p className="font-medium text-slate-800">{item.paciente}</p>
                           <p className="mt-1 text-xs text-slate-500">{item.codigoVoucher || `Guia #${item.guiaId}`} • {item.codigoAtendimento || `Atendimento #${item.atendimentoId}`}</p>
+                          {item.procedimentos?.length ? (
+                            <div className="mt-2 space-y-1 text-xs text-slate-600">
+                              {item.procedimentos.map((proc) => (
+                                <p key={proc.id}>{proc.nome} · Realizado em: {dataFinanceiraBr(proc.realizadaEm)} · Confirmado em: {dataBr(proc.confirmadaEm)}</p>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-1 text-xs text-slate-500">Repasse histórico: sem individualização de procedimentos.</p>
+                          )}
                         </div>
                         <span className="text-sm font-semibold text-slate-800">{moeda(item.valor)}</span>
                       </div>

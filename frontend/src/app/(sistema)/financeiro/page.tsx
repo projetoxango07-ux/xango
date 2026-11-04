@@ -361,6 +361,19 @@ export default function FinanceiroPage() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
 
+  const [podeConfigurarContas, setPodeConfigurarContas] = useState(false);
+  useEffect(() => {
+    const controle = new AbortController();
+    void fetch(`${API_URL}/auth/me`, { credentials: "include", cache: "no-store", signal: controle.signal })
+      .then(async resposta => resposta.ok ? resposta.json() : null)
+      .then(dados => {
+        if (!controle.signal.aborted) {
+          const permissoes = dados?.usuario?.permissoesEfetivas;
+          setPodeConfigurarContas(Array.isArray(permissoes) && permissoes.includes("financeiro.saldos_bancarios.visualizar"));
+        }
+      }).catch(() => undefined);
+    return () => controle.abort();
+  }, []);
   const [editorAberto, setEditorAberto] = useState(false);
   const [carregandoConfig, setCarregandoConfig] = useState(false);
   const [salvandoConfig, setSalvandoConfig] = useState(false);
@@ -395,7 +408,10 @@ export default function FinanceiroPage() {
   }, [inicio, fim, clinicaId]);
 
   useEffect(() => {
-    void carregar();
+    const timer = window.setTimeout(() => {
+      void carregar();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [carregar]);
 
   const carregarConfig = useCallback(async () => {
@@ -475,7 +491,11 @@ export default function FinanceiroPage() {
   }, []);
 
   useEffect(() => {
-    if (editorAberto) void carregarConfig();
+    if (!editorAberto) return;
+    const timer = window.setTimeout(() => {
+      void carregarConfig();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [editorAberto, carregarConfig]);
 
   function adicionarConta() {
@@ -679,14 +699,20 @@ export default function FinanceiroPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
+          <Link
+            href="/financeiro/v12"
+            className="flex items-center gap-2 rounded-lg border border-xango-border bg-white px-4 py-2.5 text-sm font-semibold text-xango-primary transition hover:bg-xango-background"
+          >
+            <WalletCards size={16} /> Gestão financeira V1.2
+          </Link>
+          {podeConfigurarContas && <button
             type="button"
             onClick={() => setEditorAberto((aberto) => !aberto)}
             className="flex items-center gap-2 rounded-lg border border-xango-border bg-white px-4 py-2.5 text-sm font-semibold text-xango-primary"
           >
             <Settings2 size={16} />
             {editorAberto ? "Fechar configurações" : "Contas e recebimentos"}
-          </button>
+          </button>}
           <Link href="/financeiro/repasses" className="flex items-center gap-2 rounded-lg bg-xango-primary px-4 py-2.5 text-sm font-semibold text-white">
             <HandCoins size={16} /> Gerenciar repasses
           </Link>
@@ -696,7 +722,7 @@ export default function FinanceiroPage() {
         </div>
       </div>
 
-      {editorAberto && (
+      {editorAberto && podeConfigurarContas && (
         <section className="mt-6 rounded-xl border border-xango-border bg-white shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4 border-b border-xango-border p-5">
             <div>

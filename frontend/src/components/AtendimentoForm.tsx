@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import BuscaMaePaciente from "./BuscaMaePaciente";
+import ParcelamentosGuiaV12 from "./ParcelamentosGuiaV12";
 import {
   useRouter,
   useSearchParams,
@@ -417,6 +418,17 @@ function normalizarBuscaProcedimento(valor: string) {
     .trim();
 }
 
+// Cadastro 100% e um indicador de preenchimento, nao requisito para o voucher.
+// A autorizacao final e verificada no backend.
+function cadastroMinimoVoucherCompleto(paciente: Paciente) {
+  return Boolean(
+    paciente.nome?.trim() &&
+    paciente.dataNascimento &&
+    paciente.cpf?.trim() &&
+    paciente.telefone?.trim()
+  );
+}
+
 export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -525,8 +537,59 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [valorRecebido, setValorRecebido] = useState("");
   const [parcelasPagamento, setParcelasPagamento] = useState(1);
   const [pagamentosMistos, setPagamentosMistos] = useState<PartePagamentoMisto[]>([]);
+  const [modoParcelamentoManual, setModoParcelamentoManual] = useState(false);
+  const [guiasComVoucherParcelado, setGuiasComVoucherParcelado] = useState<Record<string, boolean>>({});
+  const [guiasComCoberturaParcelada, setGuiasComCoberturaParcelada] = useState<Record<string, boolean>>({});
+  const [guiasVoucherAutorizado, setGuiasVoucherAutorizado] = useState<Record<string, boolean>>({});
+  const [motivosBloqueioVoucher, setMotivosBloqueioVoucher] = useState<Record<string, string[]>>({});
+  const [revisaoVoucherV12, setRevisaoVoucherV12] = useState(0);
   const [preferenciasFinanceiras, setPreferenciasFinanceiras] =
     useState<PreferenciasFinanceirasApi>(PREFERENCIAS_FINANCEIRAS_PADRAO);
+
+  // Revalida no servidor a liberação do voucher após reabrir o atendimento,
+  // baixar parcelas ou registrar um novo plano. A quitação não é presumida.
+  const idsVoucherV12 = Object.entries(guiaIds)
+    .map(([chave, id]) => ({ chave, id }))
+    .filter(({ id }) => Number.isInteger(id) && id > 0);
+  const assinaturaGuiasVoucherV12 = idsVoucherV12
+    .map(({ chave, id }) => `${chave}:${id}`)
+    .join("|");
+  useEffect(() => {
+    if (!assinaturaGuiasVoucherV12) return;
+    let cancelado = false;
+    const controller = new AbortController();
+    const pares = assinaturaGuiasVoucherV12.split("|").map((item) => {
+      const separador = item.lastIndexOf(":");
+      return { chave: item.slice(0, separador), id: Number(item.slice(separador + 1)) };
+    });
+    async function consultar() {
+      const resultados = await Promise.all(pares.map(async ({ chave, id }) => {
+        try {
+          const resposta = await fetch(`${API_URL}/guias/${id}`, {
+            cache: "no-store", credentials: "include", signal: controller.signal,
+          });
+          if (!resposta.ok) return { chave, liberada: false, coberta: false, autorizada: false, motivos: [] as string[] };
+          const dados = await resposta.json();
+          const elegibilidade = dados.elegibilidadeImpressao;
+          return {
+            chave,
+            liberada: Boolean(elegibilidade?.liberadoPorParcelamento),
+            coberta: Boolean(elegibilidade?.cobertoFinanceiramentePorParcelamento),
+            autorizada: Boolean(elegibilidade?.podeImprimir),
+            motivos: Array.isArray(elegibilidade?.motivos) ? elegibilidade.motivos as string[] : [],
+          };
+        } catch { return { chave, liberada: false, coberta: false, autorizada: false, motivos: [] as string[] }; }
+      }));
+      if (!cancelado) {
+        setGuiasComVoucherParcelado(Object.fromEntries(resultados.map((item) => [item.chave, item.liberada])));
+        setGuiasComCoberturaParcelada(Object.fromEntries(resultados.map((item) => [item.chave, item.coberta])));
+        setGuiasVoucherAutorizado(Object.fromEntries(resultados.map((item) => [item.chave, item.autorizada])));
+        setMotivosBloqueioVoucher(Object.fromEntries(resultados.map((item) => [item.chave, item.motivos])));
+      }
+    }
+    void consultar();
+    return () => { cancelado = true; controller.abort(); };
+  }, [assinaturaGuiasVoucherV12, revisaoVoucherV12]);
 
   const [pagamentosGuias, setPagamentosGuias] = useState<
   Record<string, number>
@@ -1596,7 +1659,7 @@ const etapaMaximaLiberada = useMemo(() => {
 
     return (
       !!guiasSalvas[guia.chave] &&
-      Math.abs(pagoLiquido - valorFinal) < 0.01
+      (Math.abs(pagoLiquido - valorFinal) < 0.01 || guiasComCoberturaParcelada[guia.chave])
     );
   });
 
@@ -1620,6 +1683,7 @@ const etapaMaximaLiberada = useMemo(() => {
   pagamentosGuias,
   estornosGuias,
   guiasSalvas,
+  guiasComCoberturaParcelada,
 ]);
 
 const contextoAprendizAtendimento = (() => {
@@ -1830,7 +1894,7 @@ const contextoAprendizAtendimento = (() => {
       );
     }
 
-    if (pacienteSelecionado.cadastroCompleto === false) {
+    if (!cadastroMinimoVoucherCompleto(pacienteSelecionado)) {
       return criar(
         "paciente-cadastro-incompleto",
         '[data-aprendiz="atendimento-paciente-editar"]',
@@ -2006,7 +2070,7 @@ const contextoAprendizAtendimento = (() => {
     );
   }
 
-  if (pacienteSelecionado?.cadastroCompleto === false) {
+  if (pacienteSelecionado && !cadastroMinimoVoucherCompleto(pacienteSelecionado)) {
     return criar(
       "revisao-cadastro-incompleto",
       '[data-aprendiz="atendimento-revisao-editar-paciente"]',
@@ -2310,6 +2374,8 @@ const contextoAprendizAtendimento = (() => {
       setPacientes((atuais) =>
         atuais.map((paciente) => paciente.id === pacienteId ? atualizar(paciente) : paciente)
       );
+      // Cadastro editado em outra aba: reconsultar a autorização do voucher.
+      setRevisaoVoucherV12((atual) => atual + 1);
     } catch (erro) {
       console.error("Erro ao atualizar cadastro do paciente:", erro);
     } finally {
@@ -3759,9 +3825,9 @@ const contextoAprendizAtendimento = (() => {
           saldoPendente === 0 &&
           !possuiEstornoPendente;
 
+        // A autorização definitiva pertence ao servidor (nome, nascimento, CPF e telefone).
         const podeImprimirGuia =
-          guiaQuitada &&
-          procedimentosAtivos.length > 0;
+          Boolean(guiasVoucherAutorizado[guia.chave]) && procedimentosAtivos.length > 0;
 
         const statusGuia =
           !guiasSalvas[guia.chave]
@@ -4176,8 +4242,10 @@ const contextoAprendizAtendimento = (() => {
                   </p>
 
                   <p className="mt-1 text-xs text-xango-muted">
-                    {statusGuia === "Paga"
-                      ? "Pagamento confirmado. Guia liberada para impressão."
+                    {guiasComVoucherParcelado[guia.chave]
+                      ? "Voucher autorizado por parcelamento. Recebimentos continuam pendentes até cada baixa manual."
+                      : statusGuia === "Paga"
+                        ? "Pagamento confirmado. Guia liberada para impressão."
                       : statusGuia === "Parcialmente paga"
                         ? "A guia possui pagamento parcial e ainda tem saldo pendente."
                         : statusGuia === "Estorno pendente"
@@ -4188,6 +4256,21 @@ const contextoAprendizAtendimento = (() => {
                   </p>
                 </div>
               </div>
+
+              {guiasSalvas[guia.chave] && !podeImprimirGuia && (motivosBloqueioVoucher[guia.chave] || []).length > 0 && (
+                <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status">
+                  <p className="font-semibold">Voucher ainda não autorizado:</p>
+                  {motivosBloqueioVoucher[guia.chave].map((motivo) => (
+                    <p key={motivo} className="mt-1">{motivo}</p>
+                  ))}
+                  {(motivosBloqueioVoucher[guia.chave] || []).some((motivo) => motivo.includes("Cadastro do paciente incompleto")) && pacienteSelecionado && (
+                    <button type="button" onClick={() => editarCadastroPaciente(pacienteSelecionado.id)}
+                      className="mt-2 rounded-md border border-amber-500 bg-white px-3 py-2 font-semibold hover:bg-amber-100">
+                      Completar cadastro do paciente
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="flex flex-wrap gap-2">
                 {guiaIds[guia.chave] && guia.tipoAgendamento !== "aguardando" && (
@@ -4222,6 +4305,7 @@ const contextoAprendizAtendimento = (() => {
                     }
                     onClick={() => {
                       setGuiaPagamentoAberta(guia.chave);
+                      setModoParcelamentoManual(false);
                       setFormaRecebimentoPagamentoId("");
                       setContaFinanceiraPagamentoId("");
                       setValorRecebido("");
@@ -4355,10 +4439,11 @@ const contextoAprendizAtendimento = (() => {
 
         <button
           type="button"
-          disabled
-          className="rounded-md bg-xango-primary px-5 py-2.5 text-sm font-medium text-white opacity-40"
+          disabled={etapaMaximaLiberada < 4}
+          onClick={() => setEtapaAtual(4)}
+          className="rounded-md bg-xango-primary px-5 py-2.5 text-sm font-medium text-white transition enabled:hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Continuar
+          Continuar para revisão
         </button>
       </div>
     </div>
@@ -4708,7 +4793,7 @@ const contextoAprendizAtendimento = (() => {
                   Conferir financeiro
                 </button>
 
-                {quitada && guiaIds[guia.chave] && (
+                {guiasVoucherAutorizado[guia.chave] && guiaIds[guia.chave] && (
                   <button
                     type="button"
                     onClick={() =>
@@ -4783,7 +4868,7 @@ const contextoAprendizAtendimento = (() => {
     <button
       type="button"
       aria-label="Fechar pagamento"
-      onClick={() => setGuiaPagamentoAberta(null)}
+      onClick={() => { setGuiaPagamentoAberta(null); setModoParcelamentoManual(false); }}
       className="fixed inset-0 z-40 bg-black/25"
     />
 
@@ -4869,6 +4954,9 @@ const contextoAprendizAtendimento = (() => {
           preferenciasFinanceiras.formasRecebimento.filter(
             (item) =>
               item.ativo &&
+              item.forma !== "BOLETO" &&
+              item.forma !== "PIX_PARCELADO" &&
+              !(item.forma === "CARTAO_CREDITO" && /pix\s*parcelado/i.test(item.nome)) &&
               preferenciasFinanceiras.formasPagamentoHabilitadas.includes(
                 item.forma
               )
@@ -4934,7 +5022,7 @@ const contextoAprendizAtendimento = (() => {
 
               <button
                 type="button"
-                onClick={() => setGuiaPagamentoAberta(null)}
+                onClick={() => { setGuiaPagamentoAberta(null); setModoParcelamentoManual(false); }}
                 className="rounded-md border border-xango-border px-3 py-2 text-sm hover:bg-xango-background"
               >
                 Fechar
@@ -4977,7 +5065,27 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               </div>
 
-              {pagamentosMistos.length > 0 && (
+              <ParcelamentosGuiaV12
+                guiaId={guiaIds[guia.chave]}
+                onModoAlterado={(ativo) => {
+                  setModoParcelamentoManual(ativo);
+                  if (ativo) {
+                    setPagamentosMistos([]);
+                    setFormaRecebimentoPagamentoId("");
+                    setContaFinanceiraPagamentoId("");
+                    setValorRecebido("");
+                  }
+                }}
+                onPlanoCriado={() => setRevisaoVoucherV12((v) => v + 1)}
+                onBaixa={(financeiro) => {
+                  setRevisaoVoucherV12((v) => v + 1);
+                  setPagamentosGuias(atuais => ({ ...atuais, [guia.chave]: Number(financeiro.totalPago || 0) }));
+                  setEstornosGuias(atuais => ({ ...atuais, [guia.chave]: Number(financeiro.totalEstornado || 0) }));
+                  setGuiasPagas(atuais => ({ ...atuais, [guia.chave]: financeiro.status === "PAGA" }));
+                }}
+              />
+
+              {!modoParcelamentoManual && pagamentosMistos.length > 0 && (
                 <div className="rounded-lg border border-xango-border">
                   <div className="border-b border-xango-border px-4 py-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
@@ -5087,7 +5195,7 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               )}
 
-              {saldoDepoisDoMisto > 0.009 && (
+              {!modoParcelamentoManual && saldoDepoisDoMisto > 0.009 && (
                 <div className="space-y-4 rounded-lg border border-xango-border p-4">
                   <div data-aprendiz="atendimento-pagamento-forma">
                     <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
@@ -5335,7 +5443,7 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               )}
 
-              <button
+              {!modoParcelamentoManual && <button
                 type="button"
                 data-aprendiz="atendimento-pagamento-confirmar"
                 disabled={
@@ -5375,9 +5483,9 @@ const contextoAprendizAtendimento = (() => {
                   : pagamentosMistos.length > 1
                     ? `Confirmar pagamento misto (${pagamentosMistos.length} formas)`
                     : "Confirmar pagamento"}
-              </button>
+              </button>}
 
-              {pagamentosMistos.length > 0 && saldoDepoisDoMisto > 0.009 && (
+              {!modoParcelamentoManual && pagamentosMistos.length > 0 && saldoDepoisDoMisto > 0.009 && (
                 <p className="text-center text-xs text-xango-muted">
                   Este registro será um pagamento parcial. Permanecerá saldo de{" "}
                   <strong>

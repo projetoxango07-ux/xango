@@ -40,7 +40,10 @@ type Clinica = { id: number; nome: string };
 
 type GuiaDisponivel = {
   guiaId: number;
+  itemGuiaId: number;
+  procedimento: string;
   codigoVoucher: string | null;
+  realizadaEm: string | null;
   pacienteId: number;
   paciente: string;
   clinicaId: number;
@@ -58,6 +61,8 @@ type ItemRepasse = {
   paciente: string;
   valor: number;
   confirmadoEm: string;
+  procedimentos: Array<{ itemGuiaId: number; nome: string; valor: number; realizadaEm: string | null }>;
+  legado: boolean;
 };
 
 type DocumentoRepasse = {
@@ -418,7 +423,7 @@ export default function RepassesPage() {
   const valorSelecionado = useMemo(
     () =>
       guiasNovaClinica
-        .filter((guia) => selecionadas.includes(guia.guiaId))
+        .filter((guia) => selecionadas.includes(guia.itemGuiaId))
         .reduce((total, guia) => total + guia.valorRepasse, 0),
     [guiasNovaClinica, selecionadas]
   );
@@ -443,7 +448,7 @@ export default function RepassesPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          guiaIds: selecionadas,
+          itemGuiaIds: selecionadas,
           dataPagamentoSolicitada: dataPagamento,
           observacoes: observacoes.trim() || null,
         }),
@@ -723,7 +728,7 @@ export default function RepassesPage() {
         <CardResumo
           titulo="Disponível para solicitar"
           valor={moeda(dados?.resumo.disponivel || 0)}
-          apoio={`${dados?.resumo.quantidadeDisponivel || 0} guia(s) confirmada(s)`}
+          apoio={`${dados?.resumo.quantidadeDisponivel || 0} procedimento(s) realizado(s) disponível(is)`}
           icone={<HandCoins size={20} />}
         />
         <CardResumo
@@ -793,11 +798,11 @@ export default function RepassesPage() {
 
             {!clinicaNova ? (
               <div className="mt-5 rounded-lg border border-dashed border-xango-border p-8 text-center text-sm text-xango-muted">
-                Selecione uma clínica para visualizar as guias confirmadas disponíveis.
+                Selecione uma clínica para visualizar os procedimentos realizados disponíveis para repasse.
               </div>
             ) : guiasNovaClinica.length === 0 ? (
               <div className="mt-5 rounded-lg border border-dashed border-xango-border p-8 text-center text-sm text-xango-muted">
-                Esta clínica não possui guias confirmadas disponíveis para uma nova solicitação.
+                Esta clínica não possui procedimentos realizados disponíveis para repasse.
               </div>
             ) : (
               <div className="mt-5 overflow-hidden rounded-lg border border-xango-border">
@@ -806,27 +811,27 @@ export default function RepassesPage() {
                     <thead className="border-b border-xango-border bg-slate-50 text-xs uppercase tracking-wide text-xango-muted">
                       <tr>
                         <th className="w-12 px-4 py-3" />
-                        <th className="px-4 py-3">Paciente / voucher</th>
-                        <th className="px-4 py-3">Confirmado em</th>
+                        <th className="px-4 py-3">Paciente / voucher / procedimento</th>
+                        <th className="px-4 py-3">Realizado em</th>
                         <th className="px-4 py-3 text-right">Repasse</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-xango-border">
                       {guiasNovaClinica.map((guia) => (
-                        <tr key={guia.guiaId} className={selecionadas.includes(guia.guiaId) ? "bg-teal-50/50" : ""}>
+                        <tr key={guia.itemGuiaId} className={selecionadas.includes(guia.itemGuiaId) ? "bg-teal-50/50" : ""}>
                           <td className="px-4 py-3">
                             <input
                               type="checkbox"
-                              checked={selecionadas.includes(guia.guiaId)}
-                              onChange={() => alternarGuia(guia.guiaId)}
+                              checked={selecionadas.includes(guia.itemGuiaId)}
+                              onChange={() => alternarGuia(guia.itemGuiaId)}
                               className="h-4 w-4 accent-teal-700"
                             />
                           </td>
                           <td className="px-4 py-3">
                             <p className="font-semibold text-xango-text">{guia.paciente}</p>
-                            <p className="mt-0.5 text-xs text-xango-muted">{guia.codigoVoucher || `Guia #${guia.guiaId}`}</p>
+                            <p className="mt-0.5 text-xs text-xango-muted">{guia.codigoVoucher || `Guia #${guia.guiaId}`} • {guia.procedimento}</p>
                           </td>
-                          <td className="px-4 py-3 text-xango-muted">{dataCurta(guia.confirmadoEm)}</td>
+                          <td className="px-4 py-3 text-xango-muted">{dataCurta(guia.realizadaEm || guia.confirmadoEm)}</td>
                           <td className="px-4 py-3 text-right font-semibold text-xango-text">{moeda(guia.valorRepasse)}</td>
                         </tr>
                       ))}
@@ -850,7 +855,7 @@ export default function RepassesPage() {
               <div className="min-w-65 rounded-lg bg-xango-background p-4">
                 <p className="text-xs uppercase tracking-wide text-xango-muted">Selecionado</p>
                 <p className="mt-1 text-xl font-bold text-xango-text">{moeda(valorSelecionado)}</p>
-                <p className="mt-1 text-xs text-xango-muted">{selecionadas.length} guia(s)</p>
+                <p className="mt-1 text-xs text-xango-muted">{selecionadas.length} procedimento(s)</p>
                 <button
                   type="button"
                   disabled={processando || !clinicaNova || selecionadas.length === 0 || !dataPagamento}
@@ -992,6 +997,9 @@ export default function RepassesPage() {
                       <span className="flex items-center gap-1"><CalendarClock size={14} />Solicitado {dataHora(repasse.solicitadoEm)}</span>
                       <span>Pagamento pedido: {dataCurta(repasse.dataPagamentoSolicitada)}</span>
                       <span>{repasse.quantidadeGuias} guia(s)</span>
+                      <span>{repasse.itens.some((item) => item.legado)
+                        ? "Repasse histórico sem detalhamento individual"
+                        : `${repasse.itens.reduce((total, item) => total + item.procedimentos.length, 0)} procedimento(s)`}</span>
                     </div>
                     {repasse.motivoRecusa && (
                       <p className="mt-2 text-sm text-red-600"><strong>Motivo da recusa:</strong> {repasse.motivoRecusa}</p>
@@ -1104,11 +1112,12 @@ export default function RepassesPage() {
 
                     <div className="mt-4 overflow-hidden rounded-lg border border-xango-border bg-white">
                       <div className="overflow-x-auto">
-                        <table className="w-full min-w-180 text-left text-sm">
+                        <table className="w-full min-w-[850px] text-left text-sm">
                           <thead className="border-b border-xango-border bg-slate-50 text-xs uppercase tracking-wide text-xango-muted">
                             <tr>
                               <th className="px-4 py-3">Paciente / voucher</th>
-                              <th className="px-4 py-3">Confirmação</th>
+                              <th className="px-4 py-3">Realizado em</th>
+                              <th className="px-4 py-3">Confirmado em</th>
                               <th className="px-4 py-3 text-right">Valor</th>
                               <th className="px-4 py-3 text-right">Análise</th>
                             </tr>
@@ -1119,6 +1128,18 @@ export default function RepassesPage() {
                                 <td className="px-4 py-3">
                                   <p className="font-semibold text-xango-text">{item.paciente}</p>
                                   <p className="mt-0.5 text-xs text-xango-muted">{item.codigoVoucher || `Guia #${item.guiaId}`}</p>
+                                  <p className="mt-1 text-xs text-xango-muted">{item.legado
+                                    ? "Repasse histórico da guia"
+                                    : item.procedimentos.map((p) => p.nome).join(" • ")}</p>
+                                </td>
+                                <td className="px-4 py-3 text-xango-muted">
+                                  {item.legado ? (
+                                    <span title="O repasse histórico não tem datas individualizadas por exame">Não individualizado</span>
+                                  ) : (
+                                    <div className="space-y-1">{item.procedimentos.map((proc) => (
+                                      <p key={proc.itemGuiaId}>{proc.nome}: {dataCurta(proc.realizadaEm)}</p>
+                                    ))}</div>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3 text-xango-muted">{dataCurta(item.confirmadoEm)}</td>
                                 <td className="px-4 py-3 text-right font-semibold text-xango-text">{moeda(item.valor)}</td>
