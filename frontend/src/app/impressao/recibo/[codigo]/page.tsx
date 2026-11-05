@@ -51,6 +51,8 @@ type ReciboApi = {
       parcelas?: number | null;
       observacao: string | null;
       criadoEm: string;
+      // Data efetiva do pagamento (NULL apenas para registros antigos).
+      dataRecebimento?: string | null;
     };
   }[];
 
@@ -131,6 +133,17 @@ function moeda(valor: string | number) {
     style: "currency",
     currency: "BRL",
   });
+}
+
+function formatarDataEfetivaRecebimento(dataEfetiva: string | null | undefined) {
+  // DATA efetiva de calendario: nao converter para fuso horario.
+  if (dataEfetiva && /^\d{4}-\d{2}-\d{2}/.test(dataEfetiva)) {
+    const [ano, mes, dia] = dataEfetiva.slice(0, 10).split("-");
+    return `${dia}/${mes}/${ano}`;
+  }
+
+  // Nao apresentar a data do cadastro como se fosse a data do pagamento.
+  return "Não informada";
 }
 
 function formaPagamentoLabel(
@@ -259,7 +272,6 @@ export default function ReciboPagamentoPage() {
     );
   }
 
-  const emitidoEm = new Date(recibo.emitidoEm);
   const voucher =
     recibo.guia.codigoPublico || `VCH-LEGADO-${recibo.guia.id}`;
 
@@ -454,8 +466,8 @@ export default function ReciboPagamentoPage() {
                     <strong>{moeda(item.pagamento.valor)}</strong>
                   </div>
 
-                  <p className="mt-1 text-[10px] text-slate-500">
-                    {new Date(item.pagamento.criadoEm).toLocaleString("pt-BR")}
+                  <p className="mt-1 text-[10px] text-slate-700">
+                    Recebido em: <strong>{formatarDataEfetivaRecebimento(item.pagamento.dataRecebimento)}</strong>
                   </p>
                 </div>
               ))}
@@ -485,14 +497,6 @@ export default function ReciboPagamentoPage() {
 
         <footer className="mt-6 border-t border-slate-300 pt-3 text-[10px] text-slate-500">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>
-              Emitido em {emitidoEm.toLocaleDateString("pt-BR")} às{" "}
-              {emitidoEm.toLocaleTimeString("pt-BR", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </span>
-
             <span>
               Gerado pelo Digna Conect • {recibo.codigoPublico}
             </span>

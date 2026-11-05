@@ -640,7 +640,11 @@ const COLUNAS_MOVIMENTACOES: ColunaTabela<MovimentacaoFinanceiraRelatorio>[] = [
 const COLUNAS_REPASSES: ColunaTabela<RepasseFinanceiroRelatorio>[] = [
   { id: "repasse", titulo: "Repasse", padrao: true, valor: (i) => i.codigoPublico },
   { id: "clinica", titulo: "Clínica", padrao: true, valor: (i) => i.clinica },
-  { id: "guiasPacientes", titulo: "Guias / pacientes", padrao: true, valor: (i) => i.itens.map((g) => `${g.paciente} • ${g.codigoVoucher || `#${g.guiaId}`}`).join(" | ") || "-" },
+  // Resumo curto: nunca colocar dezenas de pacientes na mesma célula.
+  // A lista completa permanece disponível ao clicar na solicitação.
+  { id: "guiasPacientes", titulo: "Guias / pacientes", padrao: true, valor: (i) => i.itens.length <= 2
+    ? i.itens.map((g) => `${g.codigoVoucher || `#${g.guiaId}`} · ${g.paciente}`).join(" / ") || "-"
+    : `${i.quantidadeGuias} guias · ${new Set(i.itens.map((g) => g.paciente)).size} paciente(s) · clique para detalhar` },
   { id: "quantidadeGuias", titulo: "Quantidade de guias", valor: (i) => String(i.quantidadeGuias), total: (itens) => String(somaQuantidade(itens, (i) => i.quantidadeGuias)) },
   { id: "quantidadeProcedimentos", titulo: "Procedimentos vinculados", valor: (i) => i.quantidadeProcedimentos === null ? "Legado (sem individualização)" : String(i.quantidadeProcedimentos), total: (itens) => `${somaQuantidade(itens, (i) => i.quantidadeProcedimentos || 0)} individualizado(s)${itens.some((i) => i.quantidadeProcedimentos === null) ? " + históricos não individualizados" : ""}` },
   { id: "procedimentos", titulo: "Exames vinculados", valor: (i) => i.itens.flatMap((item) => item.procedimentos || []).map((p) => p.nome).join(" | ") || "Legado (guia inteira)" },
@@ -649,9 +653,9 @@ const COLUNAS_REPASSES: ColunaTabela<RepasseFinanceiroRelatorio>[] = [
   { id: "pagamento", titulo: "Pagamento", padrao: true, valor: (i) => `${dataFinanceiraBr(i.dataPagamentoEfetivo || i.dataPagamentoSolicitada)}${i.dataPagamentoEfetivo ? " (efetivo)" : i.dataPagamentoSolicitada ? " (previsto)" : ""}` },
   { id: "pagamentoSolicitado", titulo: "Pagamento solicitado", valor: (i) => dataFinanceiraBr(i.dataPagamentoSolicitada) },
   { id: "pagamentoEfetivo", titulo: "Pagamento efetivo", valor: (i) => dataFinanceiraBr(i.dataPagamentoEfetivo) },
-  { id: "forma", titulo: "Forma", padrao: true, valor: (i) => i.formaPagamentoLabel || "-" },
+  { id: "forma", titulo: "Forma", valor: (i) => i.formaPagamentoLabel || "-" },
   { id: "valor", titulo: "Valor", padrao: true, valor: (i) => moeda(i.valorTotal), total: (itens) => moeda(somaMoeda(itens, (i) => i.valorTotal)) },
-  { id: "documentacao", titulo: "Documentação", padrao: true, valor: (i) => i.percentualDocumentacao === null ? "-" : `${i.percentualDocumentacao}%` },
+  { id: "documentacao", titulo: "Documentação", valor: (i) => i.percentualDocumentacao === null ? "-" : `${i.percentualDocumentacao}%` },
   { id: "solicitadoPor", titulo: "Solicitado por", valor: (i) => i.solicitadoPor || "-" },
   { id: "motivoRecusa", titulo: "Motivo da recusa", valor: (i) => i.motivoRecusa || "-" },
   { id: "observacoes", titulo: "Observações", valor: (i) => i.observacoes || "-" },
@@ -1253,28 +1257,57 @@ export default function RelatoriosPage() {
 
   function imprimirPdfFinanceiro() {
     if (!dadosFinanceiros) return;
+    if (abaFinanceira === "REPASSES") {
+      const janela = window.open("", "_blank", "width=1200,height=800");
+      if (!janela) { alert("Libere pop-ups para imprimir o relatório."); return; }
+      // Relatório agrupado por solicitação e detalhado uma guia por linha.
+      // Não somar o valor dos repasses a cada linha de paciente na consolidação geral.
+      const blocos = dadosFinanceiros.repasses.map((repasse) => {
+        const cab = `<div class="cab"><div><strong>${escaparHtml(repasse.codigoPublico)}</strong> · ${escaparHtml(repasse.clinica)}</div><div><strong>${escaparHtml(repasse.statusLabel)}</strong> · ${escaparHtml(dataFinanceiraBr(repasse.dataPagamentoEfetivo || repasse.dataPagamentoSolicitada))}</div><div><strong>${escaparHtml(moeda(repasse.valorTotal))}</strong></div></div>`;
+        const detalhes = repasse.itens.map((guia) => `<tr><td>${escaparHtml(guia.codigoVoucher || `Guia #${guia.guiaId}`)}</td><td>${escaparHtml(guia.paciente)}</td><td>${escaparHtml(guia.procedimentos.length ? guia.procedimentos.map(p => p.nome).join(", ") : "Repasse histórico — guia completa")}</td><td class="numero">${escaparHtml(moeda(guia.valor))}</td></tr>`).join("");
+        return `<section class="repasse">${cab}<table><thead><tr><th>Voucher</th><th>Paciente</th><th>Exame(s) neste repasse</th><th class="numero">Repasse da guia</th></tr></thead><tbody>${detalhes}</tbody></table></section>`;
+      }).join("");
+      const total = moeda(somaMoeda(dadosFinanceiros.repasses, (item) => item.valorTotal));
+      janela.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório de Repasses às Clínicas</title><style>
+        body{font-family:Arial,Helvetica,sans-serif;color:#17213a;margin:0;padding:24px;font-size:11px}
+        h1{margin:0 0 8px;font-size:19px}p{margin:0 0 14px;color:#64748b;font-size:11px}
+        .resumo{background:#f5f3ff;color:#4c1d95;font-size:13px;font-weight:bold;padding:12px;margin:12px 0 18px}
+        .repasse{margin:0 0 20px;break-inside:avoid-page;border:1px solid #ddd;border-radius:5px;overflow:hidden}
+        .cab{display:flex;gap:16px;justify-content:space-between;background:#ede9fe;padding:11px;font-size:12px}
+        .cab>div{flex:1;overflow-wrap:anywhere}.cab>div:last-child{text-align:right}
+        table{width:100%;border-collapse:collapse;table-layout:fixed}
+        th,td{text-align:left;vertical-align:top;padding:7px 8px;border-bottom:1px solid #e5e7eb;overflow-wrap:anywhere}
+        th{font-size:10px;background:#f8fafc;text-transform:uppercase;color:#475569}
+        th:nth-child(1){width:18%}th:nth-child(2){width:28%}th:nth-child(4){width:15%}
+        tr:nth-child(even){background:#fcfcff}.numero{text-align:right;white-space:nowrap}
+        @page{size:A4 landscape;margin:12mm}@media print{body{padding:0}.repasse{break-inside:avoid-page}}
+        </style></head><body>
+        <h1>Relatório de Repasses às Clínicas</h1><p>Período: ${escaparHtml(filtrosFinanceiros.inicio)} a ${escaparHtml(filtrosFinanceiros.fim)} · Gerado em ${escaparHtml(new Date().toLocaleString("pt-BR"))}</p>
+        <div class="resumo">${dadosFinanceiros.repasses.length} solicitação(ões) · Total dos repasses: ${escaparHtml(total)}</div>
+        ${blocos || "<p>Não há repasses no período.</p>"}
+        <script>window.onload=()=>window.print()</script></body></html>`);
+      janela.document.close();
+      return;
+    }
     const janela = window.open("", "_blank", "width=1200,height=800");
     if (!janela) {
       alert("O navegador bloqueou a janela de impressão. Libere pop-ups para gerar o PDF.");
       return;
     }
 
+    // A aba REPASSES foi tratada acima e encerrou a função com return.
+    // Neste ponto, restam somente MOVIMENTACOES e PREVISOES.
     const linhaTotalPdf = abaFinanceira === "MOVIMENTACOES"
       ? totaisColunas(colunasMovimentacoesVisiveis, dadosFinanceiros.movimentacoes)
-      : abaFinanceira === "REPASSES"
-        ? totaisColunas(colunasRepassesVisiveis, dadosFinanceiros.repasses)
-        : totaisColunas(colunasPrevisoesVisiveis, dadosFinanceiros.previsoes || []);
+      : totaisColunas(colunasPrevisoesVisiveis, dadosFinanceiros.previsoes || []);
     const titulo = abaFinanceira === "MOVIMENTACOES"
       ? "Relatório de Recebimentos e Estornos"
-      : abaFinanceira === "REPASSES" ? "Relatório de Repasses às Clínicas"
       : "Relatório de Previsões e Margens (não constitui pagamento)";
     const cabecalho = abaFinanceira === "MOVIMENTACOES"
       ? colunasMovimentacoesVisiveis.map((coluna) => coluna.titulo)
-      : abaFinanceira === "REPASSES" ? colunasRepassesVisiveis.map((coluna) => coluna.titulo)
       : colunasPrevisoesVisiveis.map((coluna) => coluna.titulo);
     const linhas = abaFinanceira === "MOVIMENTACOES"
       ? dadosFinanceiros.movimentacoes.map((item) => colunasMovimentacoesVisiveis.map((coluna) => coluna.valor(item)))
-      : abaFinanceira === "REPASSES" ? dadosFinanceiros.repasses.map((item) => colunasRepassesVisiveis.map((coluna) => coluna.valor(item)))
       : (dadosFinanceiros.previsoes || []).map((item) => colunasPrevisoesVisiveis.map((coluna) => coluna.valor(item)));
 
     janela.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escaparHtml(titulo)}</title><style>
@@ -1862,7 +1895,7 @@ export default function RelatoriosPage() {
               )
             ) : abaFinanceira === "REPASSES" ? (repassesPagina.length === 0 ? <Vazio /> : (
               <div className="w-full overflow-x-auto">
-                <table className="w-full text-left" style={{ minWidth: `${Math.max(8, colunasRepassesVisiveis.length) * 140}px` }}>
+                <table className="w-full text-left" style={{ minWidth: `${Math.max(6, colunasRepassesVisiveis.length) * 145}px` }}>
                   <thead className="bg-slate-50"><tr>
                     {colunasRepassesVisiveis.map((coluna) => <Th key={coluna.id}>{coluna.titulo}</Th>)}
                   </tr></thead>

@@ -18,6 +18,7 @@ import {
   Eye,
   FileCheck2,
   FileText,
+  Printer,
   HandCoins,
   Loader2,
   Paperclip,
@@ -31,6 +32,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
+import { abrirImpressaoRepasseV121 } from "@/components/ImpressaoRepasseV121";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333";
 
@@ -343,6 +345,7 @@ export default function RepassesPage() {
   const [dataPagamento, setDataPagamento] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [selecionadas, setSelecionadas] = useState<number[]>([]);
+  const [novoRepasseCriadoId, setNovoRepasseCriadoId] = useState<number | null>(null);
 
   const [abertos, setAbertos] = useState<number[]>([]);
   const [carregando, setCarregando] = useState(true);
@@ -434,6 +437,13 @@ export default function RepassesPage() {
     );
   }
 
+  // API limita cada solicitação a 100 procedimentos; jamais enviar mais do que aceita.
+  const idsElegiveis = guiasNovaClinica.map((item) => item.itemGuiaId).slice(0, 100);
+  const todasSelecionadas = idsElegiveis.length > 0 && idsElegiveis.every((id) => selecionadas.includes(id));
+  function selecionarTodas(ativar: boolean) {
+    setSelecionadas(ativar ? idsElegiveis : []);
+  }
+
   function limparAvisos() {
     setErro("");
     setMensagem("");
@@ -456,7 +466,8 @@ export default function RepassesPage() {
       const resultado = await resposta.json();
       if (!resposta.ok) throw new Error(resultado.erro || "Não foi possível criar o repasse.");
 
-      setMensagem(`Solicitação ${resultado.codigoPublico} criada e colocada automaticamente em análise.`);
+      setMensagem(`Solicitação ${resultado.codigoPublico} criada e colocada automaticamente em análise. Você já pode imprimir o demonstrativo.`);
+      setNovoRepasseCriadoId(Number(resultado.id));
       setSelecionadas([]);
       setObservacoes("");
       setNovaAberta(false);
@@ -721,7 +732,14 @@ export default function RepassesPage() {
         <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{erro}</div>
       )}
       {mensagem && (
-        <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{mensagem}</div>
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          <span>{mensagem}</span>
+          {novoRepasseCriadoId !== null && (
+            <button type="button" onClick={() => void abrirImpressaoRepasseV121(novoRepasseCriadoId, API_URL)} className="inline-flex items-center gap-2 rounded-lg bg-xango-primary px-4 py-2.5 text-xs font-bold text-white">
+              <Printer size={16}/> Imprimir solicitação (escolher colunas)
+            </button>
+          )}
+        </div>
       )}
 
       <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -810,7 +828,9 @@ export default function RepassesPage() {
                   <table className="min-w-230 w-full text-left text-sm">
                     <thead className="border-b border-xango-border bg-slate-50 text-xs uppercase tracking-wide text-xango-muted">
                       <tr>
-                        <th className="w-12 px-4 py-3" />
+                        <th className="w-12 px-4 py-3">
+                          <input type="checkbox" aria-label="Selecionar todos os procedimentos elegíveis" title="Selecionar até 100 procedimentos nesta solicitação" checked={todasSelecionadas} onChange={(e) => selecionarTodas(e.target.checked)} className="h-4 w-4 accent-teal-700" />
+                        </th>
                         <th className="px-4 py-3">Paciente / voucher / procedimento</th>
                         <th className="px-4 py-3">Realizado em</th>
                         <th className="px-4 py-3 text-right">Repasse</th>
@@ -823,6 +843,8 @@ export default function RepassesPage() {
                             <input
                               type="checkbox"
                               checked={selecionadas.includes(guia.itemGuiaId)}
+                              disabled={!idsElegiveis.includes(guia.itemGuiaId)}
+                              title={!idsElegiveis.includes(guia.itemGuiaId) ? "Limite de 100 procedimentos por solicitação" : "Selecionar procedimento"}
                               onChange={() => alternarGuia(guia.itemGuiaId)}
                               className="h-4 w-4 accent-teal-700"
                             />
@@ -841,6 +863,15 @@ export default function RepassesPage() {
               </div>
             )}
 
+            {guiasNovaClinica.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-xango-muted">
+                <span>Seleção múltipla por clínica: {idsElegiveis.length} procedimento(s) elegível(is) neste lote.</span>
+                <button type="button" onClick={() => selecionarTodas(!todasSelecionadas)} className="font-semibold text-xango-primary hover:underline">
+                  {todasSelecionadas ? "Desmarcar todos" : "Selecionar todos"}
+                </button>
+                {guiasNovaClinica.length > 100 && <span className="text-amber-700">Limite de 100 por solicitação; faça outra solicitação para os demais.</span>}
+              </div>
+            )}
             <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
               <label className="text-xs font-semibold text-xango-muted">
                 Observações da solicitação
@@ -1008,6 +1039,9 @@ export default function RepassesPage() {
 
                   <div className="min-w-52 text-right">
                     <p className="text-xl font-bold text-xango-text">{moeda(repasse.valorTotal)}</p>
+                    <button type="button" onClick={() => void abrirImpressaoRepasseV121(repasse.id, API_URL)} className="mt-2 mr-3 inline-flex items-center gap-1 text-xs font-semibold text-xango-primary" title="Imprimir demonstrativo por guia">
+                      <Printer size={14}/> Imprimir solicitação
+                    </button>
                     <button
                       type="button"
                       onClick={() => setAbertos((atuais) =>

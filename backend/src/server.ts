@@ -11708,6 +11708,16 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
     const guiaId = Number(req.params.id);
     const observacaoGeral =
       String(req.body?.observacao || "").trim() || null;
+    // Data real do crédito, independente da data/hora do lançamento (criadoEm).
+    // Clientes antigos sem este campo continuam registrando no dia atual.
+    const dataTexto = req.body?.dataRecebimento == null
+      ? dataIsoSaoPaulo()
+      : String(req.body.dataRecebimento).trim();
+    const dataRecebimento = dataRepasseRecebida(dataTexto);
+    if (!dataRecebimento || dataRecebimento.data.toISOString().slice(0, 10) !== dataTexto ||
+        dataTexto > dataIsoSaoPaulo()) {
+      return res.status(400).json({ erro: "Informe uma data de recebimento válida, igual ou anterior a hoje." });
+    }
 
     if (!guiaId) {
       return res.status(400).json({
@@ -11922,6 +11932,10 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
           const conta = contasPorId.get(contaFinanceiraId);
           if (!conta) throw new Error("PAGAMENTO_CONTA_INVALIDA");
           if (conta.tipo === "CAIXA") {
+            // Caixa físico é fechado por dia/usuário: não lançar retroativos nele.
+            if (dataTexto !== dataIsoSaoPaulo()) {
+              throw new Error("PAGAMENTO_RETROATIVO_CAIXA");
+            }
             if (forma !== "DINHEIRO" || conta.responsavelCaixaId !== usuarioAtualId()) {
               throw new Error("PAGAMENTO_CAIXA_USUARIO_INVALIDO");
             }
@@ -12002,6 +12016,8 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
             valorTarifa: preparado.valorTarifa,
             valorLiquido: preparado.valorLiquido,
             observacao: preparado.observacao,
+            dataRecebimento: dataRecebimento.data,
+            registradoPorId: usuarioAtualId(),
           },
           include: {
             operadora: { select: { id: true, nome: true } },
@@ -12036,7 +12052,7 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
                   ? ` • ${preparado.formaRecebimentoNome}`
                   : ""
               }`,
-              dataMovimentacao: pagamento.criadoEm,
+              dataMovimentacao: dataRecebimento.data,
               pagamentoId: pagamento.id,
             },
           });
@@ -12104,6 +12120,9 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
       },
       PAGAMENTO_DINHEIRO_EXIGE_CAIXA: {
         status: 400, erro: "Recebimentos em dinheiro exigem uma conta de caixa físico.",
+      },
+      PAGAMENTO_RETROATIVO_CAIXA: {
+        status: 400, erro: "O caixa físico só aceita recebimentos na data do caixa aberto. Para créditos anteriores use uma conta bancária/digital correspondente.",
       },
       PARCELAS_INVALIDAS: {
         status: 400,
@@ -13661,6 +13680,87 @@ app.get("/financeiro/repasses", async (req, res) => {
   } catch (erro) {
     console.error("Erro ao carregar repasses:", erro);
     return res.status(500).json({ erro: "Não foi possível carregar o controle de repasses." });
+  }
+});
+
+// V1.2.1: demonstrativo de uma única solicitação, uma linha por guia.
+// Os valores recebidos representam a GUIA INTEIRA e não apenas o exame do repasse.
+app.get("/financeiro/repasses/:id/impressao", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ erro: "Repasse inválido." });
+    const organizacaoId = organizacaoAtualId();
+    const repasse = await prisma.repasse.findFirst({
+      where: { id, OR: [{ organizacaoId }, { organizacaoId: null }] },
+      include: {
+        clinica: { select: { nome: true } },
+        solicitadoPor: { select: { nome: true } },
+        itens: { include: {
+          procedimentos: { include: { itemGuia: { include: { procedimento: { select: { nome: true } } } } } },
+          guia: { include: {
+            atendimento: { include: { paciente: { select: { nome: true, cpf: true } } } },
+            pagamentos: { select: { valor: true } },
+            estornos: { select: { valor: true } },
+          } },
+        } },
+      },
+    });
+    if (!repasse) return res.status(404).json({ erro: "Repasse não encontrado." });
+    const agrupadas = new Map<number, {
+      guiaId: number; voucher: string; paciente: string; cpf: string | null;
+      procedimentos: string[]; valorGuia: number; valorRecebidoGuia: number;
+      valorRepasse: number;
+    }>();
+    for (const item of repasse.itens) {
+      const guia = item.guia;
+      const atual = agrupadas.get(guia.id) || {
+        guiaId: guia.id,
+        voucher: guia.codigoPublico || `Guia #${guia.id}`,
+        paciente: guia.atendimento.paciente.nome,
+        cpf: guia.atendimento.paciente.cpf,
+        procedimentos: [],
+        valorGuia: Number(guia.valorFinal),
+        valorRecebidoGuia: Math.max(0,
+          guia.pagamentos.reduce((s, pg) => s + Number(pg.valor), 0) -
+          guia.estornos.reduce((s, est) => s + Number(est.valor), 0)),
+        valorRepasse: 0,
+      };
+      atual.valorRepasse += Number(item.valor);
+      if (item.procedimentos.length) {
+        for (const proc of item.procedimentos) atual.procedimentos.push(proc.itemGuia.procedimento.nome);
+      } else {
+        atual.procedimentos.push("Guia completa (repasse histórico)");
+      }
+      agrupadas.set(guia.id, atual);
+    }
+    const linhas = Array.from(agrupadas.values()).map((linha) => ({
+      ...linha, procedimentos: Array.from(new Set(linha.procedimentos)),
+    }));
+    const soma = (campo: "valorGuia" | "valorRecebidoGuia" | "valorRepasse") =>
+      Math.round(linhas.reduce((total, linha) => total + linha[campo], 0) * 100) / 100;
+    const mostrarRecebimentos = podeVerSaldoBancario(req);
+    return res.json({
+      codigoPublico: repasse.codigoPublico || `REP-${repasse.id}`,
+      clinica: repasse.clinica.nome,
+      status: rotuloStatusRepasse(repasse.status),
+      solicitadoEm: repasse.solicitadoEm,
+      solicitadoPor: repasse.solicitadoPor?.nome || null,
+      dataPagamentoSolicitada: repasse.dataPagamentoSolicitada,
+      observacoes: repasse.observacoes,
+      linhas: linhas.map((linha) => ({
+        ...linha,
+        valorRecebidoGuia: mostrarRecebimentos ? linha.valorRecebidoGuia : null,
+      })),
+      totais: {
+        quantidadeGuias: linhas.length,
+        valorGuias: soma("valorGuia"),
+        valorRecebido: mostrarRecebimentos ? soma("valorRecebidoGuia") : null,
+        valorRepasse: soma("valorRepasse"),
+      },
+    });
+  } catch (erro) {
+    console.error("Erro ao consultar demonstrativo de repasse:", erro);
+    return res.status(500).json({ erro: "Não foi possível preparar o demonstrativo de repasse." });
   }
 });
 

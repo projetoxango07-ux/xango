@@ -183,7 +183,7 @@ export default function ParcelamentosGuiaV12({ guiaId, onBaixa, onModoAlterado, 
                         {dados.contas.map(conta=><option key={conta.id} value={conta.id}>{conta.nome}</option>)}</select>
                     </label>
                     <label className="block">Data efetiva do crédito
-                      <input type="date" value={dataRecebimento} onChange={e=>setDataRecebimento(e.target.value)} className="mt-1 w-full rounded border p-2" />
+                      <input type="date" max={hoje()} value={dataRecebimento} onChange={e=>setDataRecebimento(e.target.value)} className="mt-1 w-full rounded border p-2" />
                     </label>
                     <div className="flex gap-2"><button disabled={salvando || !contaId} type="button" onClick={()=>void baixar(plano.id,parcela)} className="rounded bg-purple-800 px-3 py-2 text-white disabled:opacity-40">Confirmar baixa de {reais(parcela.saldo)}</button>
                     <button type="button" onClick={()=>setBaixaParcela(null)} className="rounded border px-3 py-2">Cancelar</button></div>

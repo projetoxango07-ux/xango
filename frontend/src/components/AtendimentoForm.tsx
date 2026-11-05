@@ -9,6 +9,12 @@ import {
 } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+function hojeRecebimentoSP() {
+  const partes = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const valores = Object.fromEntries(partes.map((item) => [item.type, item.value]));
+  return `${valores.year}-${valores.month}-${valores.day}`;
+}
+
 
 
 const etapas = [
@@ -537,6 +543,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [valorRecebido, setValorRecebido] = useState("");
   const [parcelasPagamento, setParcelasPagamento] = useState(1);
   const [pagamentosMistos, setPagamentosMistos] = useState<PartePagamentoMisto[]>([]);
+  const [dataRecebimentoPagamento, setDataRecebimentoPagamento] = useState(hojeRecebimentoSP);
   const [modoParcelamentoManual, setModoParcelamentoManual] = useState(false);
   const [guiasComVoucherParcelado, setGuiasComVoucherParcelado] = useState<Record<string, boolean>>({});
   const [guiasComCoberturaParcelada, setGuiasComCoberturaParcelada] = useState<Record<string, boolean>>({});
@@ -2577,7 +2584,8 @@ const contextoAprendizAtendimento = (() => {
   async function registrarPagamentoImediato(
     guiaChave: string,
     guiaId: number,
-    pagamentos: PartePagamentoMisto[]
+    pagamentos: PartePagamentoMisto[],
+    dataRecebimento: string
   ) {
     try {
       setProcessandoPagamento(true);
@@ -2590,6 +2598,7 @@ const contextoAprendizAtendimento = (() => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            dataRecebimento,
             pagamentos: pagamentos.map((pagamento) => ({
               valor: pagamento.valor,
               formaRecebimentoId: pagamento.formaRecebimentoId,
@@ -4305,6 +4314,7 @@ const contextoAprendizAtendimento = (() => {
                     }
                     onClick={() => {
                       setGuiaPagamentoAberta(guia.chave);
+                      setDataRecebimentoPagamento(hojeRecebimentoSP());
                       setModoParcelamentoManual(false);
                       setFormaRecebimentoPagamentoId("");
                       setContaFinanceiraPagamentoId("");
@@ -5030,6 +5040,18 @@ const contextoAprendizAtendimento = (() => {
             </div>
 
             <div className="mt-6 space-y-5">
+              <label className="block rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-sm font-medium text-xango-text">
+                Data efetiva do recebimento
+                <input
+                  type="date"
+                  required
+                  max={hojeRecebimentoSP()}
+                  value={dataRecebimentoPagamento}
+                  onChange={(e) => setDataRecebimentoPagamento(e.target.value)}
+                  className="mt-2 block w-full rounded-lg border border-xango-border bg-white px-3 py-2 text-sm"
+                />
+                <span className="mt-2 block text-xs font-normal text-xango-muted">Use o dia em que o dinheiro realmente entrou. O registro conserva a data e o usuário do lançamento separadamente. O caixa físico exige o dia do caixa aberto.</span>
+              </label>
               <div className="rounded-md border border-xango-border bg-xango-background p-4">
                 <div className="flex justify-between text-sm">
                   <span className="text-xango-muted">Valor da guia</span>
@@ -5448,6 +5470,8 @@ const contextoAprendizAtendimento = (() => {
                 data-aprendiz="atendimento-pagamento-confirmar"
                 disabled={
                   pagamentosMistos.length === 0 ||
+                  !dataRecebimentoPagamento ||
+                  dataRecebimentoPagamento > hojeRecebimentoSP() ||
                   processandoPagamento
                 }
                 onClick={async () => {
@@ -5465,7 +5489,8 @@ const contextoAprendizAtendimento = (() => {
                     await registrarPagamentoImediato(
                       guia.chave,
                       guiaId,
-                      pagamentosMistos
+                      pagamentosMistos,
+                      dataRecebimentoPagamento
                     );
 
                   if (!sucesso) {
