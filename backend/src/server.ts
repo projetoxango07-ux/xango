@@ -9,6 +9,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { criarRotasFinanceiroV12 } from "./financeiro-v12.js";
 import { criarRotasParcelamentosV12, temCoberturaParcelamentoV12 } from "./parcelamentos-v12.js";
+import { criarRotasTrocaClinicaV122 } from "./troca-clinica-v122.js";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL!,
@@ -871,6 +872,13 @@ app.post("/auth/trocar-senha", autenticarObrigatorio, async (req, res) => {
 // Daqui em diante toda a API exige uma sessão válida e aplica permissões.
 app.use(autenticarObrigatorio);
 app.use(autorizarRota);
+
+// V1.2.2: alteração integral de clínica, com simulação, auditoria e travas financeiras.
+app.use("/guias", criarRotasTrocaClinicaV122(prisma, {
+  organizacaoAtualId,
+  usuarioAtualId,
+  recalcularGuia: recalcularStatusFinanceiroGuia,
+}));
 
 // V1.2: modulo financeiro aditivo; autenticacao e permissoes ja aplicadas.
 app.use("/financeiro/v12", criarRotasFinanceiroV12(prisma, {
@@ -2589,6 +2597,7 @@ async function registrarEstornoVinculado(
     select: {
       organizacaoId: true,
       geradaPorId: true,
+      clinica: { select: { id: true, nome: true, documento: true } },
     },
   });
 
@@ -2671,6 +2680,13 @@ async function registrarEstornoVinculado(
       },
     });
 
+    // Fotografia do parceiro no momento do estorno; não depende da clínica atual da guia.
+    await tx.auditoriaFinanceira.create({ data: {
+      organizacaoId, usuarioId: usuarioAtualId(), entidade: "ESTORNO", registroId: estornoCriado.id,
+      acao: "EMISSAO_ESTORNO", motivo,
+      dadosNovos: { guiaId, clinicaId: guia.clinica.id, clinicaNome: guia.clinica.nome,
+        documentoClinica: guia.clinica.documento ?? null },
+    } });
     estornosCriados.push(estornoCriado);
 
     if (pagamento.contaFinanceiraId && valorAplicado > 0.009) {
@@ -8969,6 +8985,10 @@ app.put("/atendimentos/:id", async (req, res) => {
         erro: "Este atendimento está cancelado e não pode mais ser alterado.",
       });
     }
+    if (atendimentoExistente.organizacaoId !== null &&
+        atendimentoExistente.organizacaoId !== organizacaoAtualId()) {
+      return res.status(404).json({ erro: "Atendimento não encontrado." });
+    }
 
     const configuracoesOrganizacao = await obterConfiguracoesOrganizacaoAtual();
     const validadeGuiaMesesPadrao = normalizarValidadeGuiaMeses(
@@ -8977,6 +8997,102 @@ app.put("/atendimentos/:id", async (req, res) => {
 
     const atendimentoAtualizado =
       await prisma.$transaction(async (tx) => {
+        // Serializa edições de guias do mesmo atendimento e evita dados desatualizados.
+        await tx.$queryRaw`SELECT "id" FROM "Atendimento" WHERE "id" = ${atendimentoId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "atendimentoId" = ${atendimentoId} ORDER BY "id" FOR UPDATE`;
+        // V1.2.2: não identificar voucher por clínica/unidade. Um procedimento
+        // salvo mantém sua guia de origem; fusão/divisão exige correção própria.
+        const guiasOriginais = await tx.guia.findMany({
+          where: { atendimentoId },
+          include: {
+            itens: true, pagamentos: true, estornos: true,
+            repasses: { select: { id: true } },
+            planosParcelamento: { where: { ativo: true }, select: { id: true } },
+          },
+        });
+        const origensProcedimento = new Map<number, Set<number>>();
+        for (const original of guiasOriginais) {
+          if (original.status === "CANCELADA") continue;
+          for (const item of original.itens) {
+            if (item.status === "CANCELADO") continue;
+            const origens = origensProcedimento.get(item.procedimentoId) || new Set<number>();
+            origens.add(original.id);
+            origensProcedimento.set(item.procedimentoId, origens);
+          }
+        }
+        const guiaOriginalPorGrupo = new Map<any, number>();
+        const originaisIdentificadas = new Set<number>();
+        const emCentavos = (valor: unknown) => Math.round(Number(valor || 0) * 100);
+        for (const recebida of guias) {
+          const idExplicito = recebida.guiaId === null || recebida.guiaId === undefined
+            ? 0 : Number(recebida.guiaId);
+          if (idExplicito && (!Number.isInteger(idExplicito) || idExplicito < 1)) {
+            throw new Error("V122_IDENTIFICACAO_GUIA_INVALIDA");
+          }
+          const origens = new Set<number>();
+          for (const item of recebida.itens || []) {
+            for (const origem of origensProcedimento.get(Number(item.procedimentoId)) || []) {
+              origens.add(origem);
+            }
+          }
+          if (origens.size > 1) throw new Error("V122_GUIAS_MESCLADAS");
+          const inferido = [...origens][0] || 0;
+          if (idExplicito && inferido && idExplicito !== inferido) {
+            throw new Error("V122_GUIAS_MESCLADAS");
+          }
+          const guiaIdOriginal = idExplicito || inferido;
+          if (!guiaIdOriginal) continue;
+          const original = guiasOriginais.find((g) => g.id === guiaIdOriginal);
+          if (!original || original.status === "CANCELADA") {
+            throw new Error("V122_IDENTIFICACAO_GUIA_INVALIDA");
+          }
+          // A rotina atual identifica itens pelo procedimentoId; duplicatas
+          // exigem itemGuiaId e não podem ser regravadas em bloco com segurança.
+          const idsItens = original.itens.map((i) => i.procedimentoId);
+          if (new Set(idsItens).size !== idsItens.length) throw new Error("V122_ITENS_DUPLICADOS");
+          if (originaisIdentificadas.has(original.id)) throw new Error("V122_GUIAS_DIVIDIDAS");
+          originaisIdentificadas.add(original.id);
+          guiaOriginalPorGrupo.set(recebida, original.id);
+          if (original.clinicaId !== Number(recebida.clinicaId) ||
+              (original.unidadeClinicaId ?? null) !== (recebida.unidadeClinicaId ? Number(recebida.unidadeClinicaId) : null)) {
+            throw new Error("V122_TROCA_CLINICA_FLUXO_ESPECIFICO");
+          }
+          // Um documento com realização, repasse ou parcelamento não deve ser
+          // regravado em bloco; o fluxo administrativo precisa de validação própria.
+          if (original.realizadaEm || original.confirmadaEm ||
+              original.itens.some((i) => i.realizadaEm || i.confirmadaEm || i.status === "REALIZADO") ||
+              original.repasses.length > 0 || original.planosParcelamento.length > 0) {
+            throw new Error("V122_GUIA_OPERACIONAL_PROTEGIDA");
+          }
+          if (original.pagamentos.length || original.estornos.length) {
+            // A rotina legada reescreve canceladoEm; não regravar cancelamentos históricos.
+            if (original.itens.some((i) => i.status === "CANCELADO")) {
+              throw new Error("V122_EDICAO_FINANCEIRA_FLUXO_ESPECIFICO");
+            }
+            const mesmosValores =
+              emCentavos(original.subtotal) === emCentavos(recebida.subtotal) &&
+              emCentavos(original.desconto) === emCentavos(recebida.desconto) &&
+              emCentavos(original.beneficio) === emCentavos(recebida.beneficio) &&
+              emCentavos(original.valorFinal) === emCentavos(recebida.valorFinal) &&
+              emCentavos(recebida.valorPago) === original.pagamentos.reduce((t, p) => t + emCentavos(p.valor), 0) &&
+              emCentavos(recebida.valorEstornado) === original.estornos.reduce((t, e) => t + emCentavos(e.valor), 0);
+            const mesmosItens = original.itens.length === (recebida.itens || []).length &&
+              original.itens.every((item) => {
+                const encontrados = (recebida.itens || []).filter((i: any) => Number(i.procedimentoId) === item.procedimentoId);
+                if (encontrados.length !== 1) return false;
+                const recebido = encontrados[0];
+                return Number(recebido.quantidade ?? 1) === item.quantidade &&
+                  String(recebido.detalhamento || "").trim() === String(item.detalhamento || "").trim() &&
+                  Boolean(recebido.cancelado) === (item.status === "CANCELADO") &&
+                  emCentavos(recebido.valorPaciente) === emCentavos(item.valorPaciente) &&
+                  emCentavos(recebido.valorRepasse) === emCentavos(item.valorRepasse);
+              });
+            if (!mesmosValores || !mesmosItens) {
+              throw new Error("V122_EDICAO_FINANCEIRA_FLUXO_ESPECIFICO");
+            }
+          }
+        }
+
         const codigoPublicoAtendimento =
           atendimentoExistente.codigoPublico ||
           (await gerarCodigoPublicoUnico("ATD"));
@@ -9028,14 +9144,12 @@ app.put("/atendimentos/:id", async (req, res) => {
             }
           }
 
-          // Reaproveita somente a guia da mesma clínica e da mesma unidade.
-          const guiaExistente =
-            atendimentoExistente.guias.find(
-              (guia) =>
-                guia.clinicaId === clinicaId &&
-                (guia.unidadeClinicaId || null) === unidadeClinicaId &&
-                !guiasUtilizadas.has(guia.id)
-            );
+          // A identificação foi validada antes da transação escrever qualquer dado.
+          // Clínica, unidade e agendamento NÃO determinam a identidade do voucher.
+          const guiaOriginalId = guiaOriginalPorGrupo.get(guiaRecebida);
+          const guiaExistente = guiaOriginalId
+            ? guiasOriginais.find((guia) => guia.id === guiaOriginalId)
+            : undefined;
 
           let guiaId: number;
 
@@ -9393,8 +9507,25 @@ app.put("/atendimentos/:id", async (req, res) => {
 
         // Guias antigas que desapareceram da tela não são excluídas.
         // São mantidas no histórico como canceladas.
-        for (const guiaBanco of atendimentoExistente.guias) {
+        for (const guiaBanco of guiasOriginais) {
           if (!guiasUtilizadas.has(guiaBanco.id)) {
+            if (guiaBanco.status === "CANCELADA") continue;
+            const [repasseVinculado, parcelamentoVinculado] = await Promise.all([
+              tx.repasseItem.findFirst({ where: { guiaId: guiaBanco.id }, select: { id: true } }),
+              tx.planoParcelamento.findFirst({ where: { guiaId: guiaBanco.id, ativo: true }, select: { id: true } }),
+            ]);
+
+            const guiaProtegida =
+              guiaBanco.pagamentos.length > 0 ||
+              guiaBanco.estornos.length > 0 ||
+              guiaBanco.realizadaEm !== null || guiaBanco.confirmadaEm !== null ||
+              guiaBanco.itens.some((item) => item.realizadaEm !== null || item.confirmadaEm !== null || item.status === "REALIZADO") ||
+              Boolean(repasseVinculado) || Boolean(parcelamentoVinculado);
+
+            if (guiaProtegida) {
+              throw new Error("GUIA_PROTEGIDA_CONTRA_CANCELAMENTO_AUTOMATICO");
+            }
+
             await tx.guia.update({
               where: {
                 id: guiaBanco.id,
@@ -9450,6 +9581,25 @@ app.put("/atendimentos/:id", async (req, res) => {
 
     return res.json(atendimentoAtualizado);
   } catch (erro) {
+    const mensagensV122: Record<string, string> = {
+      V122_IDENTIFICACAO_GUIA_INVALIDA: "A identidade de uma guia não confere com o atendimento. Reabra a tela.",
+      V122_GUIAS_MESCLADAS: "Não é permitido unir procedimentos de guias existentes por esta tela. Use uma correção administrativa.",
+      V122_GUIAS_DIVIDIDAS: "Não é permitido dividir uma guia existente nesta edição. Use uma correção administrativa.",
+      V122_ITENS_DUPLICADOS: "Esta guia possui procedimentos repetidos. A edição genérica exige uma correção específica por item.",
+      V122_TROCA_CLINICA_FLUXO_ESPECIFICO: "A troca de clínica/unidade de guia salva deve ser feita pelo botão 'Trocar clínica/unidade desta guia'.",
+      V122_GUIA_OPERACIONAL_PROTEGIDA: "Existe realização, repasse ou parcelamento ativo. A guia exige um fluxo de correção específico.",
+      V122_EDICAO_FINANCEIRA_FLUXO_ESPECIFICO: "Os valores ou procedimentos de uma guia com histórico financeiro não podem ser alterados por esta tela. Use a operação específica.",
+    };
+    const chaveV122 = erro instanceof Error ? erro.message : "";
+    if (mensagensV122[chaveV122]) return res.status(409).json({ erro: mensagensV122[chaveV122] });
+    if (
+      erro instanceof Error &&
+      erro.message === "GUIA_PROTEGIDA_CONTRA_CANCELAMENTO_AUTOMATICO"
+    ) {
+      return res.status(409).json({
+        erro: "Alteração bloqueada: a guia possui histórico financeiro, realização ou repasse. Utilize o fluxo específico de correção.",
+      });
+    }
     console.error(
       "Erro ao atualizar atendimento:",
       erro
@@ -11621,6 +11771,7 @@ app.post("/guias/:id/confirmar-realizacao", async (req, res) => {
       return res.status(400).json({ erro: "Seleção de procedimentos inválida." });
     }
     const resultado = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT a."id" FROM "Atendimento" a JOIN "Guia" g ON g."atendimentoId" = a."id" WHERE g."id" = ${guiaId} FOR UPDATE OF a`;
       await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
       const guia = await tx.guia.findFirst({
         where: { id: guiaId, OR: [{ organizacaoId: organizacaoAtualId() }, { organizacaoId: null }] },
@@ -11736,6 +11887,7 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
     }
 
     const resultado = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
       const guia = await tx.guia.findUnique({
         where: { id: guiaId },
         include: {
@@ -12243,6 +12395,7 @@ app.post("/guias/:id/estornos", async (req, res) => {
     }
 
     const resultado = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
       const guia = await tx.guia.findUnique({
         where: { id: guiaId },
         include: {
@@ -12369,6 +12522,49 @@ app.post("/guias/:id/estornos", async (req, res) => {
 });
 
 
+// V1.2.2: fotografia da clínica do estorno. Registros anteriores ao pacote
+// usam a primeira troca posterior (estado anterior da troca), quando disponível.
+type ClinicaHistoricaEstornoV122 = { id: number; nome: string; documento: string | null };
+type EventoClinicaV122 = { criadoEm: Date; dadosAnteriores: unknown; dadosNovos: unknown };
+function lerClinicaHistoricaV122(dados: unknown) {
+  if (!dados || typeof dados !== "object" || Array.isArray(dados)) return null;
+  const d = dados as Record<string, unknown>;
+  if (typeof d.clinicaId !== "number" || !Number.isInteger(d.clinicaId) ||
+      typeof d.clinicaNome !== "string" || !d.clinicaNome.trim()) return null;
+  return { id: d.clinicaId, nome: d.clinicaNome,
+    documento: typeof d.documentoClinica === "string" ? d.documentoClinica : null,
+    temDocumentoHistorico: Object.prototype.hasOwnProperty.call(d, "documentoClinica") };
+}
+async function clinicaHistoricaEstornoV122(
+  estorno: { id: number; criadoEm: Date; organizacaoId: number | null },
+  guia: { id: number; organizacaoId: number | null; clinica: ClinicaHistoricaEstornoV122 },
+  trocas: EventoClinicaV122[], fotografias: Map<number, unknown>,
+): Promise<ClinicaHistoricaEstornoV122> {
+  const foto = lerClinicaHistoricaV122(fotografias.get(estorno.id));
+  if (foto) return { id: foto.id, nome: foto.nome, documento: foto.documento };
+  const trocaPosterior = trocas.find((troca) => troca.criadoEm.getTime() > estorno.criadoEm.getTime());
+  const anterior = lerClinicaHistoricaV122(trocaPosterior?.dadosAnteriores);
+  if (!anterior) return guia.clinica;
+  // Auditorias legadas preservavam nome e ID, mas não o documento fiscal.
+  // Recuperar o documento cadastrado da clínica histórica, sem inventar valores.
+  const cadastro = anterior.temDocumentoHistorico ? null : await prisma.clinica.findUnique({
+    where: { id: anterior.id }, select: { documento: true },
+  });
+  return { id: anterior.id, nome: anterior.nome,
+    documento: anterior.temDocumentoHistorico ? anterior.documento : cadastro?.documento ?? null };
+}
+async function carregarHistoricoClinicasV122(guiasIds: number[], estornosIds: number[], organizacaoId: number) {
+  const [trocas, fotos] = await Promise.all([
+    prisma.auditoriaFinanceira.findMany({ where: { organizacaoId, entidade: "GUIA", acao: "TROCA_CLINICA", registroId: { in: guiasIds } },
+      orderBy: [{ criadoEm: "asc" }, { id: "asc" }] }),
+    prisma.auditoriaFinanceira.findMany({ where: { organizacaoId, entidade: "ESTORNO", acao: "EMISSAO_ESTORNO", registroId: { in: estornosIds } },
+      orderBy: [{ criadoEm: "desc" }, { id: "desc" }] }),
+  ]);
+  const fotografias = new Map<number, unknown>();
+  for (const foto of fotos) if (!fotografias.has(foto.registroId)) fotografias.set(foto.registroId, foto.dadosNovos);
+  return { trocas, fotografias };
+}
+
 app.get("/estornos/:codigo", async (req, res) => {
   try {
     const codigo = String(req.params.codigo || "").trim();
@@ -12421,7 +12617,11 @@ app.get("/estornos/:codigo", async (req, res) => {
       });
     }
 
-    return res.json(estorno);
+    const organizacaoId = estorno.organizacaoId ?? estorno.guia.organizacaoId ?? organizacaoAtualId();
+    if (organizacaoId !== organizacaoAtualId()) return res.status(404).json({ erro: "Estorno não encontrado." });
+    const { trocas, fotografias } = await carregarHistoricoClinicasV122([estorno.guiaId], [estorno.id], organizacaoId);
+    const clinicaHistorica = await clinicaHistoricaEstornoV122(estorno, estorno.guia, trocas, fotografias);
+    return res.json({ ...estorno, clinicaHistorica });
   } catch (erro) {
     console.error("Erro ao carregar estorno:", erro);
 
@@ -12496,6 +12696,13 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
       });
     }
 
+    const organizacaoId = atendimento.organizacaoId ?? organizacaoAtualId();
+    if (organizacaoId !== organizacaoAtualId()) return res.status(404).json({ erro: "Atendimento não encontrado." });
+    const { trocas, fotografias } = await carregarHistoricoClinicasV122(
+      atendimento.guias.map((guia) => guia.id),
+      atendimento.guias.flatMap((guia) => guia.estornos.map((estorno) => estorno.id)),
+      organizacaoId,
+    );
     const recibos = atendimento.guias.flatMap((guia) =>
       guia.recibos.map((recibo) => ({
         id: recibo.id,
@@ -12506,7 +12713,7 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
         emitidoEm: recibo.emitidoEm,
         guiaId: guia.id,
         codigoVoucher: guia.codigoPublico,
-        clinica: guia.clinica.nome,
+        clinica: recibo.nomeClinica,
         pagamentos: recibo.pagamentos.map((vinculo) => ({
           id: vinculo.pagamento.id,
           valor: vinculo.pagamento.valor,
@@ -12527,8 +12734,10 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
       }))
     );
 
-    const estornos = atendimento.guias.flatMap((guia) =>
-      guia.estornos.map((estorno) => {
+    const estornos = await Promise.all(atendimento.guias.flatMap((guia) =>
+      guia.estornos.map(async (estorno) => {
+        const clinicaHistorica = await clinicaHistoricaEstornoV122(estorno, guia,
+          trocas.filter((troca) => troca.registroId === guia.id), fotografias);
         const reciboRelacionado =
           estorno.pagamento?.recibos?.[0]?.recibo || null;
 
@@ -12541,7 +12750,7 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
           criadoEm: estorno.criadoEm,
           guiaId: guia.id,
           codigoVoucher: guia.codigoPublico,
-          clinica: guia.clinica.nome,
+          clinica: clinicaHistorica.nome,
           reciboRelacionado: reciboRelacionado
             ? {
                 codigoPublico:
@@ -12559,7 +12768,7 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
             : null,
         };
       })
-    );
+    ));
 
     return res.json({
       atendimento: {

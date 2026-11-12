@@ -15,6 +15,7 @@ type EstornoApi = {
   forma: string;
   motivo: string | null;
   criadoEm: string;
+  clinicaHistorica?: { id: number; nome: string; documento: string | null };
 
   organizacao: {
     id: number;
@@ -346,13 +347,13 @@ export default function ComprovanteEstornoPage() {
             </p>
 
             <p className="mt-2 font-bold">
-              {estorno.guia.clinica.nome}
+              {(estorno.clinicaHistorica || estorno.guia.clinica).nome}
             </p>
 
             <p className="mt-1 text-xs text-slate-600">
               Documento:{" "}
               {formatarDocumento(
-                estorno.guia.clinica.documento
+                (estorno.clinicaHistorica || estorno.guia.clinica).documento
               )}
             </p>
           </div>

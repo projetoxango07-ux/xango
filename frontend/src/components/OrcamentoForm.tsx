@@ -393,6 +393,10 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
 
   const [buscaProcedimento, setBuscaProcedimento] = useState("");
   const [itens, setItens] = useState<ItemSelecionado[]>([]);
+  const [clinicaLote, setClinicaLote] = useState<number | null>(null);
+  const [unidadeLote, setUnidadeLote] = useState<number | null>(null);
+  const [selecionadosLote, setSelecionadosLote] = useState<number[]>([]);
+  const [mensagemLote, setMensagemLote] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [validadeDias, setValidadeDias] = useState(15);
   const [condicoesPagamento, setCondicoesPagamento] = useState(
@@ -757,6 +761,34 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
         } => registro !== null
       );
   }, [itens, procedimentos]);
+
+  const clinicasLote = useMemo(() => {
+    const mapa = new Map<number, ClinicaPreco>();
+    for (const { procedimento } of itensDetalhados) {
+      for (const preco of opcoesClinica(procedimento)) mapa.set(preco.clinicaId, preco.clinica);
+    }
+    return [...mapa.values()].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  }, [itensDetalhados]);
+  const clinicaDestinoLote = clinicasLote.find((c) => c.id === clinicaLote);
+  const unidadeLoteValida = Boolean(clinicaDestinoLote &&
+    (clinicaDestinoLote.unidades.length === 0 ? unidadeLote === null :
+      clinicaDestinoLote.unidades.some((u) => u.id === unidadeLote)));
+  const compativeisLote = itensDetalhados.filter(({ item, procedimento }) =>
+    Boolean(clinicaDestinoLote && unidadeLoteValida && precoAtual(procedimento, {
+      ...item, clinicaId: clinicaDestinoLote.id, unidadeClinicaId: unidadeLote,
+    })));
+  const idsCompativeisLote = new Set(compativeisLote.map(({ item }) => item.procedimentoId));
+  const quantidadeSelecionadaLote = selecionadosLote.filter((id) => idsCompativeisLote.has(id)).length;
+  function aplicarClinicaUnidadeLote() {
+    if (!clinicaDestinoLote || !unidadeLoteValida || !quantidadeSelecionadaLote) return;
+    const ids = new Set(selecionadosLote.filter((id) => idsCompativeisLote.has(id)));
+    setItens((atuais) => atuais.map((item) => ids.has(item.procedimentoId)
+      ? { ...item, clinicaId: clinicaDestinoLote.id, unidadeClinicaId: unidadeLote }
+      : item));
+    setMensagemLote(`${ids.size} procedimento(s) atualizado(s). Os demais permaneceram sem alterações.`);
+    setSelecionadosLote([]);
+    setErroSalvar("");
+  }
 
   const valorTotal = useMemo(
     () =>
@@ -1278,6 +1310,55 @@ export default function OrcamentoForm({ orcamentoId }: OrcamentoFormProps) {
 
           {itensDetalhados.length > 0 && (
             <section className="space-y-3">
+              <div className="rounded-xl border border-xango-border bg-white p-5">
+                <h3 className="font-semibold text-xango-text">Clínica e unidade em lote</h3>
+                <p className="mt-1 text-xs text-xango-muted">Escolha o destino e marque apenas os procedimentos que deseja alterar. Os demais mantêm suas escolhas e preços.</p>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <label className="text-sm font-medium text-xango-text">Clínica
+                    <select value={clinicaLote ?? ""} onChange={(e) => {
+                      const id = Number(e.target.value) || null;
+                      const clinica = clinicasLote.find((c) => c.id === id);
+                      setClinicaLote(id); setUnidadeLote(clinica?.unidades.length === 1 ? clinica.unidades[0].id : null);
+                      setSelecionadosLote([]); setMensagemLote("");
+                    }} className="mt-1.5 w-full rounded-lg border border-xango-border bg-white px-3 py-2.5 text-sm">
+                      <option value="">Selecione a clínica</option>
+                      {clinicasLote.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-sm font-medium text-xango-text">Unidade
+                    <select value={unidadeLote ?? ""} disabled={!clinicaDestinoLote?.unidades.length}
+                      onChange={(e) => { setUnidadeLote(Number(e.target.value) || null); setSelecionadosLote([]); setMensagemLote(""); }}
+                      className="mt-1.5 w-full rounded-lg border border-xango-border bg-white px-3 py-2.5 text-sm disabled:bg-slate-50">
+                      <option value="">{clinicaDestinoLote && clinicaDestinoLote.unidades.length === 0 ? "Sem unidade separada" : "Selecione a unidade"}</option>
+                      {clinicaDestinoLote?.unidades.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                    </select>
+                  </label>
+                </div>
+                {clinicaDestinoLote && unidadeLoteValida && (
+                  <div className="mt-4 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-xango-muted">
+                      <span>{compativeisLote.length} de {itensDetalhados.length} compatível(is)</span>
+                      <button type="button" onClick={() => setSelecionadosLote([...idsCompativeisLote])}
+                        disabled={!compativeisLote.length} className="font-semibold text-xango-primary underline disabled:opacity-40">Selecionar compatíveis</button>
+                    </div>
+                    {itensDetalhados.map(({ item, procedimento }) => {
+                      const compativel = idsCompativeisLote.has(item.procedimentoId);
+                      const preco = compativel ? precoExibido(procedimento, { ...item, clinicaId: clinicaDestinoLote.id, unidadeClinicaId: unidadeLote }) : null;
+                      return <label key={item.procedimentoId} className="flex items-center gap-2 rounded-md border border-xango-border p-2.5 text-sm">
+                        <input type="checkbox" disabled={!compativel} checked={compativel && selecionadosLote.includes(item.procedimentoId)}
+                          onChange={(e) => setSelecionadosLote((atuais) => e.target.checked ? [...new Set([...atuais, item.procedimentoId])] : atuais.filter((id) => id !== item.procedimentoId))} />
+                        <span className="flex-1">{procedimento.nome}</span>
+                        <span className="text-xs text-xango-muted">{preco ? moeda(preco.valorPaciente * item.quantidade) : "Indisponível"}</span>
+                      </label>;
+                    })}
+                  </div>
+                )}
+                <button type="button" onClick={aplicarClinicaUnidadeLote} disabled={!unidadeLoteValida || quantidadeSelecionadaLote === 0}
+                  className="mt-4 rounded-md bg-xango-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
+                  Aplicar aos selecionados ({quantidadeSelecionadaLote})
+                </button>
+                {mensagemLote && <p role="status" className="mt-2 text-xs font-medium text-emerald-700">{mensagemLote}</p>}
+              </div>
               {itensDetalhados.map(
                 ({ item, procedimento, unidades, preco }) => {
                   const clinicas = opcoesClinica(procedimento);
