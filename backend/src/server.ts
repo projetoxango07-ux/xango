@@ -7,6 +7,7 @@ import { randomInt, randomUUID, randomBytes, createHash, timingSafeEqual, scrypt
 import { AsyncLocalStorage } from "node:async_hooks";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client.js";
+import { registrarRotasTerceirizacao } from "./terceirizacao.js";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL!,
@@ -331,6 +332,20 @@ const PERMISSOES_DISPONIVEIS = [
   "configuracoes.editar",
   "usuarios.visualizar",
   "usuarios.editar",
+  "terceirizacao.visualizar",
+  "terceirizacao.producao.visualizar",
+  "terceirizacao.producao.criar",
+  "terceirizacao.producao.editar",
+  "terceirizacao.equipamentos.visualizar",
+  "terceirizacao.equipamentos.editar",
+  "terceirizacao.laudos.visualizar",
+  "terceirizacao.laudos.editar",
+  "terceirizacao.financeiro.visualizar",
+  "terceirizacao.financeiro.editar",
+  "terceirizacao.relatorios.visualizar",
+  "terceirizacao.equipe.visualizar",
+  "terceirizacao.configuracoes.visualizar",
+  "terceirizacao.configuracoes.editar",
 ] as const;
 
 type Permissao = (typeof PERMISSOES_DISPONIVEIS)[number];
@@ -417,6 +432,7 @@ const GRUPOS_PERMISSOES = [
   { modulo: "Relatórios", permissoes: ["relatorios.visualizar"] },
   { modulo: "Configurações", permissoes: ["configuracoes.visualizar", "configuracoes.editar"] },
   { modulo: "Usuários", permissoes: ["usuarios.visualizar", "usuarios.editar"] },
+  { modulo: "Terceirização", permissoes: ["terceirizacao.visualizar", "terceirizacao.producao.visualizar", "terceirizacao.producao.criar", "terceirizacao.producao.editar", "terceirizacao.equipamentos.visualizar", "terceirizacao.equipamentos.editar", "terceirizacao.laudos.visualizar", "terceirizacao.laudos.editar", "terceirizacao.financeiro.visualizar", "terceirizacao.financeiro.editar", "terceirizacao.relatorios.visualizar", "terceirizacao.equipe.visualizar", "terceirizacao.configuracoes.visualizar", "terceirizacao.configuracoes.editar"] },
 ];
 
 function permissoesEfetivas(usuario: Pick<UsuarioAutenticado, "perfil" | "usarPermissoesPersonalizadas" | "permissoes">) {
@@ -858,6 +874,10 @@ app.post("/auth/trocar-senha", autenticarObrigatorio, async (req, res) => {
 
 // Daqui em diante toda a API exige uma sessão válida e aplica permissões.
 app.use(autenticarObrigatorio);
+registrarRotasTerceirizacao(app, prisma, (req, permissao) => {
+  const usuario = (req as RequestComUsuario).usuarioAutenticado;
+  return !!usuario && possuiPermissao(usuario, permissao as Permissao);
+});
 app.use(autorizarRota);
 
 // ======================================================
@@ -2517,6 +2537,7 @@ async function registrarEstornoVinculado(
   valorSolicitado: number,
   forma:
     | "PIX"
+    | "PIX_PARCELADO"
     | "DINHEIRO"
     | "CARTAO_CREDITO"
     | "CARTAO_DEBITO"
@@ -4609,7 +4630,7 @@ function dadosUnidadeRecebidos(
 app.get("/clinicas", async (_req, res) => {
   try {
     const clinicas = await prisma.clinica.findMany({
-      where: {
+      where: { parceriaAgendamentos: true, 
         ativo: true,
       },
       include: {
@@ -4648,7 +4669,7 @@ app.get("/clinicas", async (_req, res) => {
 // Lista administrativa, incluindo clínicas inativas.
 app.get("/clinicas/resumo", async (_req, res) => {
   try {
-    const clinicas = await prisma.clinica.findMany({
+    const clinicas = await prisma.clinica.findMany({ where: { parceriaAgendamentos: true }, 
       include: {
         unidades: {
           orderBy: {

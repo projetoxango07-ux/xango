@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 const grupos = [
+  { titulo: "TERCEIRIZAÇÃO", itens: [{ label: "Portal Terceirização", href: "/terceirizacao", icon: Stethoscope, permissao: "terceirizacao.visualizar" }] },
   {
     titulo: "OPERAÇÃO",
     itens: [

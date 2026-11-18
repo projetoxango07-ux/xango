@@ -79,6 +79,7 @@ enum TipoAgendamento {
 
 enum FormaPagamento {
   PIX
+  PIX_PARCELADO
   DINHEIRO
   CARTAO_CREDITO
   CARTAO_DEBITO
@@ -132,6 +133,35 @@ enum OrigemMovimentacaoConta {
   ESTORNO
   REPASSE
   AJUSTE
+  DESPESA
+  TRANSFERENCIA
+  DEPOSITO
+  RETIRADA_SOCIO
+}
+
+// V1.2 - parcelas mantidas separadas dos pagamentos efetivamente liquidados.
+enum StatusParcelaReceber {
+  PENDENTE
+  PARCIALMENTE_RECEBIDA
+  RECEBIDA
+  CANCELADA
+}
+
+enum StatusSessaoCaixa {
+  ABERTA
+  FECHADA
+}
+
+enum NaturezaTransferenciaFinanceira {
+  ENTRE_CONTAS
+  DEPOSITO
+}
+
+enum TipoRetiradaSocio {
+  PRO_LABORE
+  DISTRIBUICAO_LUCROS
+  ADIANTAMENTO
+  OUTRA
 }
 
 enum TipoDocumentoRepasse {
@@ -191,6 +221,14 @@ enum TipoVinculoFamiliar {
 }
 
 model Organizacao {
+  regrasBonificacaoV3 RegraBonificacaoV3[]
+  fechamentosBonificacaoV3 FechamentoBonificacaoV3[]
+  eventosBonificacaoV3 EventoBonificacaoV3[]
+  configuracoesLaudosV3 ConfiguracaoLaudoV3[] @relation("V3OrgConfiguracaoLaudo")
+  regrasFinanceirasTerceirizacao RegraFinanceiraV3[] @relation("V3OrgRegraFinanceira")
+  titulosFinanceirosTerceirizacao TituloFinanceiroV3[] @relation("V3OrgTituloFinanceiro")
+  terceirizacaoEquipamentos TerceirizacaoEquipamento[] @relation("V3OrganizacaoEquipamento")
+  terceirizacaoProducoes TerceirizacaoProducao[] @relation("V3OrganizacaoProducao")
   id            Int       @id @default(autoincrement())
 
   nomeFantasia  String
@@ -241,6 +279,14 @@ model Organizacao {
   movimentacoesConta     MovimentacaoConta[]
   contasPadraoRepasse    ContaPadraoRepasse[]
 
+  // V1.2 - novos registros independentes da V1.1
+  planosParcelamento   PlanoParcelamento[]
+  sessoesCaixa         SessaoCaixa[]
+  despesasFinanceiras  DespesaFinanceira[]
+  transferencias       TransferenciaFinanceira[]
+  retiradasSocio       RetiradaSocio[]
+  auditoriasFinanceiras AuditoriaFinanceira[]
+
   criadoEm      DateTime  @default(now())
   atualizadoEm  DateTime  @updatedAt
 }
@@ -274,6 +320,19 @@ model FaturaSistema {
 }
 
 model Usuario {
+  regrasBonificacaoV3 RegraBonificacaoV3[] @relation("V3BonusFuncionario")
+  regrasBonificacaoCriadasV3 RegraBonificacaoV3[] @relation("V3BonusRegraAutor")
+  itensBonificacaoV3 ItemBonificacaoV3[]
+  eventosBonificacaoV3 EventoBonificacaoV3[]
+  auditoriasTitulosV3 AuditoriaTituloV3[] @relation("V3AuditoriaTituloUsuario")
+  regrasFinanceirasV3Criadas RegraFinanceiraV3[] @relation("V3RegraCriadaPor")
+  titulosFinanceirosV3Criados TituloFinanceiroV3[] @relation("V3TituloCriadoPor")
+  baixasFinanceirasV3Registradas BaixaFinanceiraV3[] @relation("V3BaixaRegistradaPor")
+  baixasFinanceirasV3Estornadas BaixaFinanceiraV3[] @relation("V3BaixaEstornadaPor")
+  eventosLaudoV3 TerceirizacaoEventoLaudo[] @relation("V3UsuarioEventosLaudo")
+  terceirizacaoRetiradas TerceirizacaoUsoEquipamento[] @relation("V3RetiradoPor")
+  terceirizacaoExamesRealizados TerceirizacaoExame[] @relation("V3ExameRealizadoPor")
+  terceirizacaoProducoesCriadas TerceirizacaoProducao[] @relation("V3ProducaoCriadaPor")
   id              Int            @id @default(autoincrement())
 
   codigoPublico   String?        @unique
@@ -315,6 +374,15 @@ model Usuario {
   documentosRepasseEnviados     DocumentoRepasse[] @relation("DocumentoRepasseEnviadoPor")
   documentosRepasseDesativados  DocumentoRepasse[] @relation("DocumentoRepasseDesativadoPor")
   relatosProblema              RelatoProblema[]
+
+  // V1.2 - autoria e trilha de auditoria
+  caixasAbertos        SessaoCaixa[]          @relation("CaixaAbertoPor")
+  caixasFechados       SessaoCaixa[]          @relation("CaixaFechadoPor")
+  despesasLancadas     DespesaFinanceira[]    @relation("DespesaLancadaPor")
+  transferenciasCriadas TransferenciaFinanceira[] @relation("TransferenciaCriadaPor")
+  retiradasRegistradas RetiradaSocio[]       @relation("RetiradaRegistradaPor")
+  recebimentosRegistrados Pagamento[]        @relation("PagamentoRegistradoPor")
+  auditoriasFinanceiras AuditoriaFinanceira[] @relation("AuditoriaFinanceiraUsuario")
 
   criadoEm        DateTime        @default(now())
   atualizadoEm    DateTime        @updatedAt
@@ -359,6 +427,7 @@ model Empresa {
 }
 
 model Paciente {
+  terceirizacaoProducoes TerceirizacaoProducao[] @relation("V3PacienteProducao")
   id                   Int       @id @default(autoincrement())
 
   codigoPublico        String?   @unique
@@ -448,6 +517,10 @@ model VinculoFamiliar {
 }
 
 model Clinica {
+  configuracoesLaudosV3 ConfiguracaoLaudoV3[] @relation("V3ClinicaConfiguracaoLaudo")
+  regrasFinanceirasTerceirizacao RegraFinanceiraV3[] @relation("V3ClinicaRegraFinanceira")
+  titulosFinanceirosTerceirizacao TituloFinanceiroV3[] @relation("V3ClinicaTituloFinanceiro")
+  terceirizacaoProducoes TerceirizacaoProducao[] @relation("V3ClinicaProducao")
   id             Int           @id @default(autoincrement())
 
   nome           String
@@ -491,6 +564,8 @@ model Clinica {
 
   observacoes    String?
   ativo          Boolean       @default(true)
+  parceriaAgendamentos     Boolean @default(true)
+  parceriaTerceirizacao  Boolean @default(false)
 
   unidades       UnidadeClinica[]
   guias          Guia[]
@@ -504,6 +579,8 @@ model Clinica {
 }
 
 model UnidadeClinica {
+  laudosParaEntregaV3 TerceirizacaoExame[] @relation("V3UnidadeEntregaLaudo")
+  terceirizacaoProducoes TerceirizacaoProducao[] @relation("V3UnidadeProducao")
   id             Int       @id @default(autoincrement())
 
   clinicaId      Int
@@ -581,6 +658,7 @@ model ProcedimentoEquivalenciaHistorica {
 }
 
 model Procedimento {
+  terceirizacaoExames TerceirizacaoExame[] @relation("V3ProcedimentoExame")
   id             Int           @id @default(autoincrement())
   nome           String
   categoria      String?
@@ -881,6 +959,7 @@ model Guia {
   estornos              Estorno[]
   repasses              RepasseItem[]
   recibos               Recibo[]
+  planosParcelamento    PlanoParcelamento[]
 
   criadoEm              DateTime     @default(now())
   atualizadoEm          DateTime     @updatedAt
@@ -975,6 +1054,13 @@ model ContaFinanceira {
   movimentacoes   MovimentacaoConta[]
   padroesRepasse  ContaPadraoRepasse[]
 
+  // V1.2 - saldos consolidados por conta e movimentos internos
+  sessoesCaixa    SessaoCaixa[]
+  despesasFinanceiras DespesaFinanceira[]
+  transferenciasOrigem TransferenciaFinanceira[] @relation("TransferenciaContaOrigem")
+  transferenciasDestino TransferenciaFinanceira[] @relation("TransferenciaContaDestino")
+  retiradasSocio RetiradaSocio[]
+
   criadoEm        DateTime            @default(now())
   atualizadoEm    DateTime            @default(now()) @updatedAt
 
@@ -999,8 +1085,13 @@ model FormaRecebimento {
 
   ativo           Boolean             @default(true)
 
+  // V1.2: boleto e PIX parcelado nao sao pagamentos de cartao de credito.
+  permiteParcelamento      Boolean @default(false)
+  baixaManualPorParcela    Boolean @default(false)
+
   tarifas         TarifaFormaRecebimento[]
   pagamentos      Pagamento[]
+  planosParcelamento PlanoParcelamento[]
 
   criadoEm        DateTime            @default(now())
   atualizadoEm    DateTime            @default(now()) @updatedAt
@@ -1070,11 +1161,26 @@ model MovimentacaoConta {
   repasseId           Int?                     @unique
   repasse             Repasse?                 @relation(fields: [repasseId], references: [id], onDelete: Cascade)
 
+  // Registros ligados ao movimento financeiro de cada operacao V1.2.
+  despesaFinanceiraId Int?                   @unique
+  despesaFinanceira   DespesaFinanceira?     @relation(fields: [despesaFinanceiraId], references: [id], onDelete: Restrict)
+
+  transferenciaId       Int?
+  transferencia         TransferenciaFinanceira? @relation(fields: [transferenciaId], references: [id], onDelete: Restrict)
+
+  retiradaSocioId      Int?                   @unique
+  retiradaSocio        RetiradaSocio?         @relation(fields: [retiradaSocioId], references: [id], onDelete: Restrict)
+
+  sessaoCaixaId        Int?
+  sessaoCaixa          SessaoCaixa?           @relation(fields: [sessaoCaixaId], references: [id], onDelete: SetNull)
+
   criadoEm            DateTime                 @default(now())
 
   @@index([organizacaoId, dataMovimentacao])
   @@index([contaFinanceiraId, dataMovimentacao])
   @@index([tipo, origem])
+  @@index([transferenciaId])
+  @@index([sessaoCaixaId])
 }
 
 model Pagamento {
@@ -1110,6 +1216,16 @@ model Pagamento {
   valorTarifa             Decimal?            @db.Decimal(10, 2)
   valorLiquido            Decimal?            @db.Decimal(10, 2)
 
+  // Data financeira efetiva, independente da data/hora de lancamento.
+  // NULL em pagamentos legados: relatorios devem usar criadoEm como fallback.
+  dataRecebimento         DateTime?           @db.Date
+  registradoPorId         Int?
+  registradoPor           Usuario?            @relation("PagamentoRegistradoPor", fields: [registradoPorId], references: [id], onDelete: SetNull)
+
+  // Preenchido apenas na baixa de uma parcela manual V1.2.
+  parcelaReceberId        Int?
+  parcelaReceber          ParcelaReceber?     @relation(fields: [parcelaReceberId], references: [id], onDelete: SetNull)
+
   observacao              String?
 
   recibos                 ReciboPagamento[]
@@ -1122,6 +1238,8 @@ model Pagamento {
   @@index([formaRecebimentoId])
   @@index([contaFinanceiraId])
   @@index([forma, parcelas])
+  @@index([dataRecebimento])
+  @@index([parcelaReceberId])
 }
 
 model Estorno {
@@ -1359,4 +1477,572 @@ model RepasseItem {
   criadoEm        DateTime     @default(now())
 
   @@unique([repasseId, guiaId])
+}
+// -----------------------------------------------------------------------------
+// V1.2 - Estrutura financeira aditiva (sem alterar registros antigos)
+// -----------------------------------------------------------------------------
+
+// Compromisso de recebimento: parcelar NAO significa receber o dinheiro.
+model PlanoParcelamento {
+  id                  Int                  @id @default(autoincrement())
+  organizacaoId       Int
+  organizacao         Organizacao          @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  guiaId              Int
+  guia                Guia                 @relation(fields: [guiaId], references: [id], onDelete: Restrict)
+  formaRecebimentoId  Int?
+  formaRecebimento    FormaRecebimento?    @relation(fields: [formaRecebimentoId], references: [id], onDelete: SetNull)
+  forma               FormaPagamento
+  descricaoForma      String?
+  valorTotal          Decimal              @db.Decimal(12, 2)
+  numeroParcelas      Int
+  ativo               Boolean              @default(true)
+  observacao          String?              @db.Text
+  canceladoEm         DateTime?
+  motivoCancelamento  String?
+  parcelas            ParcelaReceber[]
+  criadoEm            DateTime             @default(now())
+  atualizadoEm        DateTime             @updatedAt
+
+  @@index([organizacaoId, criadoEm])
+  @@index([guiaId])
+  @@index([forma, ativo])
+}
+
+model ParcelaReceber {
+  id                  Int                  @id @default(autoincrement())
+  planoParcelamentoId Int
+  planoParcelamento   PlanoParcelamento    @relation(fields: [planoParcelamentoId], references: [id], onDelete: Restrict)
+  numero              Int
+  vencimento          DateTime             @db.Date
+  valorPrevisto       Decimal              @db.Decimal(12, 2)
+  status              StatusParcelaReceber @default(PENDENTE)
+  observacao          String?
+  pagamentos          Pagamento[]
+  criadoEm            DateTime             @default(now())
+  atualizadoEm        DateTime             @updatedAt
+
+  // Status VENCIDA deve ser calculado pela data atual e saldo em aberto.
+  // Valor pago/saldo devem ser derivados dos pagamentos efetivos, descontados estornos.
+  @@unique([planoParcelamentoId, numero])
+  @@index([vencimento, status])
+}
+
+// Uma sessao pertence a uma conta do tipo CAIXA, validado na camada de servico.
+model SessaoCaixa {
+  id                   Int               @id @default(autoincrement())
+  organizacaoId        Int
+  organizacao          Organizacao       @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  contaFinanceiraId    Int
+  contaFinanceira      ContaFinanceira   @relation(fields: [contaFinanceiraId], references: [id], onDelete: Restrict)
+  dataMovimento        DateTime          @db.Date
+  status               StatusSessaoCaixa @default(ABERTA)
+  saldoInicialInformado Decimal          @db.Decimal(12, 2)
+  saldoFinalEsperado   Decimal?          @db.Decimal(12, 2)
+  saldoFinalContado    Decimal?          @db.Decimal(12, 2)
+  diferenca            Decimal?          @db.Decimal(12, 2)
+  abertoPorId          Int
+  abertoPor            Usuario           @relation("CaixaAbertoPor", fields: [abertoPorId], references: [id], onDelete: Restrict)
+  fechadoPorId         Int?
+  fechadoPor           Usuario?          @relation("CaixaFechadoPor", fields: [fechadoPorId], references: [id], onDelete: SetNull)
+  abertoEm             DateTime          @default(now())
+  fechadoEm            DateTime?
+  observacaoAbertura   String?
+  observacaoFechamento String?
+  movimentacoes        MovimentacaoConta[]
+  criadoEm             DateTime          @default(now())
+  atualizadoEm         DateTime          @updatedAt
+
+  // Impedir 2 caixas abertos na mesma conta: indice parcial na migration SQL.
+  @@index([organizacaoId, dataMovimento])
+  @@index([contaFinanceiraId, status])
+}
+
+model DespesaFinanceira {
+  id                  Int               @id @default(autoincrement())
+  organizacaoId       Int
+  organizacao         Organizacao       @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  contaFinanceiraId   Int
+  contaFinanceira     ContaFinanceira   @relation(fields: [contaFinanceiraId], references: [id], onDelete: Restrict)
+  descricao           String
+  categoria           String?
+  valor               Decimal           @db.Decimal(12, 2)
+  dataPagamento       DateTime          @db.Date
+  documentoReferencia String?
+  comprovanteReferencia String?
+  registradoPorId     Int
+  registradoPor       Usuario           @relation("DespesaLancadaPor", fields: [registradoPorId], references: [id], onDelete: Restrict)
+  movimento           MovimentacaoConta?
+  canceladaEm         DateTime?
+  motivoCancelamento  String?
+  criadoEm            DateTime          @default(now())
+  atualizadoEm        DateTime          @updatedAt
+
+  @@index([organizacaoId, dataPagamento])
+  @@index([contaFinanceiraId, dataPagamento])
+}
+
+// A transferencia deve criar SAIDA e ENTRADA atomicamente, sem gerar receita/despesa.
+model TransferenciaFinanceira {
+  id                 Int                            @id @default(autoincrement())
+  organizacaoId      Int
+  organizacao        Organizacao                    @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  contaOrigemId      Int
+  contaOrigem        ContaFinanceira                @relation("TransferenciaContaOrigem", fields: [contaOrigemId], references: [id], onDelete: Restrict)
+  contaDestinoId     Int
+  contaDestino       ContaFinanceira                @relation("TransferenciaContaDestino", fields: [contaDestinoId], references: [id], onDelete: Restrict)
+  natureza           NaturezaTransferenciaFinanceira @default(ENTRE_CONTAS)
+  valor              Decimal                        @db.Decimal(12, 2)
+  dataEfetiva        DateTime                       @db.Date
+  descricao          String?
+  comprovanteReferencia String?
+  registradoPorId    Int
+  registradoPor      Usuario                       @relation("TransferenciaCriadaPor", fields: [registradoPorId], references: [id], onDelete: Restrict)
+  movimentacoes      MovimentacaoConta[]
+  canceladaEm        DateTime?
+  criadoEm           DateTime                       @default(now())
+  atualizadoEm       DateTime                       @updatedAt
+
+  @@index([organizacaoId, dataEfetiva])
+  @@index([contaOrigemId, dataEfetiva])
+  @@index([contaDestinoId, dataEfetiva])
+}
+
+model RetiradaSocio {
+  id                 Int             @id @default(autoincrement())
+  organizacaoId      Int
+  organizacao        Organizacao     @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  contaFinanceiraId  Int
+  contaFinanceira    ContaFinanceira @relation(fields: [contaFinanceiraId], references: [id], onDelete: Restrict)
+  socioNome          String
+  tipo               TipoRetiradaSocio
+  competencia        DateTime?       @db.Date
+  valor              Decimal         @db.Decimal(12, 2)
+  dataEfetiva        DateTime        @db.Date
+  observacao         String?
+  comprovanteReferencia String?
+  registradoPorId    Int
+  registradoPor      Usuario         @relation("RetiradaRegistradaPor", fields: [registradoPorId], references: [id], onDelete: Restrict)
+  movimento          MovimentacaoConta?
+  canceladaEm        DateTime?
+  criadoEm           DateTime        @default(now())
+  atualizadoEm       DateTime        @updatedAt
+
+  @@index([organizacaoId, dataEfetiva])
+  @@index([contaFinanceiraId, dataEfetiva])
+  @@index([tipo, competencia])
+}
+
+// Toda alteracao de data, baixa, cancelamento e reabertura deve deixar trilha.
+model AuditoriaFinanceira {
+  id            Int          @id @default(autoincrement())
+  organizacaoId Int
+  organizacao   Organizacao  @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  usuarioId     Int?
+  usuario       Usuario?     @relation("AuditoriaFinanceiraUsuario", fields: [usuarioId], references: [id], onDelete: SetNull)
+  entidade      String
+  registroId    Int
+  acao          String
+  motivo        String?
+  dadosAnteriores Json?
+  dadosNovos    Json?
+  criadoEm      DateTime     @default(now())
+
+  @@index([organizacaoId, criadoEm])
+  @@index([entidade, registroId])
+}
+
+// -----------------------------------------------------------------------------
+// TERCEIRIZACAO V3.0 - entidades aditivas (sem modificar registros da V1)
+// -----------------------------------------------------------------------------
+
+enum TipoExameTerceirizacao {
+  ECG
+  EEG
+  ESPIROMETRIA
+  MAPA
+  HOLTER
+}
+
+enum StatusExameTerceirizacao {
+  REALIZADO
+  ENVIADO_LAUDO
+  LAUDO_RECEBIDO
+  ENTREGUE
+  CANCELADO
+}
+
+enum TipoEquipamentoTerceirizacao {
+  MAPA
+  HOLTER
+  ECG
+  EEG
+  ESPIROMETRO
+}
+
+// Um lancamento agrupa varios exames da mesma pessoa no mesmo atendimento.
+// O nome digitado e preservado; pacienteId so deve ser vinculado apos identificar
+// a pessoa com seguranca. Nunca vincular homonimos automaticamente.
+model TerceirizacaoProducao {
+  id                   Int         @id @default(autoincrement())
+  organizacaoId        Int
+  organizacao          Organizacao @relation("V3OrganizacaoProducao", fields: [organizacaoId], references: [id])
+  clinicaId            Int
+  clinica              Clinica     @relation("V3ClinicaProducao", fields: [clinicaId], references: [id])
+  unidadeClinicaId     Int?
+  unidadeClinica       UnidadeClinica? @relation("V3UnidadeProducao", fields: [unidadeClinicaId], references: [id])
+  pacienteId           Int?
+  paciente             Paciente?   @relation("V3PacienteProducao", fields: [pacienteId], references: [id])
+  nomePacienteDigitado String
+  dataRealizacao       DateTime    @db.Date
+  criadoPorId          Int
+  criadoPor            Usuario     @relation("V3ProducaoCriadaPor", fields: [criadoPorId], references: [id])
+  exames               TerceirizacaoExame[]
+  criadoEm             DateTime    @default(now())
+  atualizadoEm         DateTime    @updatedAt
+
+  @@index([organizacaoId, dataRealizacao])
+  @@index([clinicaId, dataRealizacao])
+  @@index([pacienteId, dataRealizacao])
+}
+
+// Cada exame possui ciclo individual de laudo, valor, aparelho e bonificacao.
+model TerceirizacaoExame {
+  classificacaoBonificacaoV3 ClassificacaoBonificacaoV3 @default(NAO_CONFERIDO)
+  itemBonificacaoV3 ItemBonificacaoV3?
+  eventosBonificacaoV3 EventoBonificacaoV3[]
+  titulosFinanceirosV3 TituloFinanceiroV3[] @relation("V3TitulosDoExame")
+  laudoTelemedicina String?
+  laudoUnidadeEntregaId Int?
+  laudoUnidadeEntrega UnidadeClinica? @relation("V3UnidadeEntregaLaudo", fields: [laudoUnidadeEntregaId], references: [id])
+  laudoPrevisaoOriginal DateTime? @db.Date
+  laudoPrevisaoEntrega DateTime? @db.Date
+  laudoConvenio String?
+  laudoCategoriaAtendimento String?
+  laudoFormaPagamento String?
+  laudoValorBaseReal Decimal? @db.Decimal(14, 2)
+  financeiroPendenciaV3 String?
+  laudoNascimento DateTime? @db.Date
+  laudoDocumento String?
+  laudoObservacoes String?
+  laudoEnviadoEm DateTime?
+  laudoRecebidoEm DateTime?
+  laudoEntregueEm DateTime?
+  laudoMeioEntrega String?
+  laudoReferenciaEntrega String?
+  eventosLaudo TerceirizacaoEventoLaudo[] @relation("V3EventosDoExame")
+  id                Int        @id @default(autoincrement())
+  codigoInterno     String     @unique @default(cuid())
+  producaoId        Int
+  producao          TerceirizacaoProducao @relation(fields: [producaoId], references: [id])
+  tipoExame         TipoExameTerceirizacao
+  procedimentoId    Int?
+  procedimento      Procedimento? @relation("V3ProcedimentoExame", fields: [procedimentoId], references: [id])
+  executadoPorId    Int
+  executadoPor      Usuario    @relation("V3ExameRealizadoPor", fields: [executadoPorId], references: [id])
+  status            StatusExameTerceirizacao @default(REALIZADO)
+  usoEquipamento    TerceirizacaoUsoEquipamento?
+  criadoEm          DateTime   @default(now())
+  atualizadoEm      DateTime   @updatedAt
+
+  @@index([producaoId])
+  @@index([tipoExame, status])
+  @@index([executadoPorId, status])
+}
+
+model TerceirizacaoEquipamento {
+  id                Int        @id @default(autoincrement())
+  organizacaoId     Int
+  organizacao       Organizacao @relation("V3OrganizacaoEquipamento", fields: [organizacaoId], references: [id])
+  codigo            String
+  tipo              TipoEquipamentoTerceirizacao
+  ativo             Boolean    @default(true)
+  usos              TerceirizacaoUsoEquipamento[]
+  criadoEm          DateTime   @default(now())
+  atualizadoEm      DateTime   @updatedAt
+
+  @@unique([organizacaoId, codigo])
+  @@index([organizacaoId, tipo, ativo])
+}
+
+// Um exame MAPA/Holter usa um aparelho ate a retirada e o descarregamento.
+// A API deve impedir transacionalmente nova alocacao enquanto descarregadoEm
+// estiver nulo, e registrar quem confirmou a retirada.
+model TerceirizacaoUsoEquipamento {
+  id                Int        @id @default(autoincrement())
+  exameId           Int        @unique
+  exame             TerceirizacaoExame @relation(fields: [exameId], references: [id])
+  equipamentoId     Int
+  equipamento       TerceirizacaoEquipamento @relation(fields: [equipamentoId], references: [id])
+  instaladoEm       DateTime
+  retiradaPrevista  DateTime?  @db.Date
+  retiradoEm        DateTime?
+  retiradoPorId     Int?
+  retiradoPor       Usuario?   @relation("V3RetiradoPor", fields: [retiradoPorId], references: [id])
+  descarregadoEm    DateTime?
+  criadoEm          DateTime   @default(now())
+  atualizadoEm      DateTime   @updatedAt
+
+  @@index([equipamentoId, descarregadoEm])
+  @@index([retiradaPrevista, retiradoEm])
+}
+
+// Historico de acoes na esteira de laudos, separado do financeiro V1.
+model TerceirizacaoEventoLaudo {
+  id Int @id @default(autoincrement())
+  exameId Int
+  exame TerceirizacaoExame @relation("V3EventosDoExame", fields: [exameId], references: [id])
+  usuarioId Int
+  usuario Usuario @relation("V3UsuarioEventosLaudo", fields: [usuarioId], references: [id])
+  acao String
+  detalhes String?
+  ocorridoEm DateTime @default(now())
+
+  @@index([exameId, ocorridoEm])
+  @@index([usuarioId, ocorridoEm])
+}
+
+// -----------------------------------------------------------------------------
+// FINANCEIRO DA TERCEIRIZACAO V3 — independente de caixa, guias e repasses da V1.
+// A competencia e sempre derivada de exame.producao.dataRealizacao (@db.Date).
+// Valores aplicados aos titulos sao snapshots e nao mudam quando regras mudarem.
+// Nenhum exame antigo recebe titulo financeiro automaticamente nesta migracao.
+// -----------------------------------------------------------------------------
+
+enum MetodoCalculoFinanceiroV3 {
+  FIXO
+  PERCENTUAL
+}
+
+enum NaturezaTituloFinanceiroV3 {
+  A_RECEBER
+  A_PAGAR
+}
+
+// Vigencia e segmentacao permitem AdconMed por plano/sem plano e
+// CLMED por modalidade/convênio. Evitar sobreposicao de regras na API.
+model RegraFinanceiraV3 {
+  id                  Int                           @id @default(autoincrement())
+  organizacaoId       Int
+  organizacao         Organizacao                   @relation("V3OrgRegraFinanceira", fields: [organizacaoId], references: [id])
+  clinicaId           Int
+  clinica             Clinica                       @relation("V3ClinicaRegraFinanceira", fields: [clinicaId], references: [id])
+  tipoExame           TipoExameTerceirizacao
+  convenio            String                        @default("")
+  categoriaAtendimento String                       @default("")
+  metodo              MetodoCalculoFinanceiroV3
+  valorFixo           Decimal?                      @db.Decimal(14, 2)
+  percentual          Decimal?                      @db.Decimal(7, 4)
+  valorBaseReferencia Decimal?                      @db.Decimal(14, 2) // legado: somente informativo
+  valorCobradoContratado Decimal?                    @db.Decimal(14, 2) // preco contratual para calculo percentual automatico
+  inicioVigencia      DateTime                      @db.Date
+  fimVigencia         DateTime?                     @db.Date
+  ativo               Boolean                       @default(true)
+  observacoes         String?                       @db.Text
+  criadoPorId         Int
+  criadoPor           Usuario                       @relation("V3RegraCriadaPor", fields: [criadoPorId], references: [id])
+  titulos             TituloFinanceiroV3[]
+  criadoEm            DateTime                      @default(now())
+  atualizadoEm        DateTime                      @updatedAt
+
+  @@index([organizacaoId, clinicaId, tipoExame, ativo])
+  @@index([clinicaId, inicioVigencia, fimVigencia])
+}
+
+// Titulo por exame/natureza. A API deve conferir pertencimento do exame,
+// clinica e organizacao, alem das permissoes V3, antes de criar ou modificar.
+model TituloFinanceiroV3 {
+  id                  Int                           @id @default(autoincrement())
+  organizacaoId       Int
+  organizacao         Organizacao                   @relation("V3OrgTituloFinanceiro", fields: [organizacaoId], references: [id])
+  clinicaId           Int
+  clinica             Clinica                       @relation("V3ClinicaTituloFinanceiro", fields: [clinicaId], references: [id])
+  exameId             Int
+  exame               TerceirizacaoExame            @relation("V3TitulosDoExame", fields: [exameId], references: [id])
+  regraId             Int?
+  regra               RegraFinanceiraV3?            @relation(fields: [regraId], references: [id])
+  natureza            NaturezaTituloFinanceiroV3    @default(A_RECEBER)
+  convenio            String                        @default("")
+  categoriaAtendimento String                       @default("")
+  formaPagamentoOrigem String?
+  valorBaseReferencia Decimal?                      @db.Decimal(14, 2)
+  percentualAplicado  Decimal?                      @db.Decimal(7, 4)
+  valorDevido         Decimal                       @db.Decimal(14, 2)
+  observacoes         String?                       @db.Text
+  canceladoEm         DateTime?
+  motivoCancelamento  String?                       @db.Text
+  criadoPorId         Int
+  criadoPor           Usuario                       @relation("V3TituloCriadoPor", fields: [criadoPorId], references: [id])
+  parcelas            ParcelaFinanceiraV3[]
+  auditorias          AuditoriaTituloV3[] @relation("V3AuditoriasDoTitulo")
+  dataCompetencia     DateTime? @db.Date // data real de realizacao; titulos legados podem permanecer null
+  criadoEm            DateTime                      @default(now())
+  atualizadoEm        DateTime                      @updatedAt
+
+  @@unique([exameId, natureza])
+  @@index([organizacaoId, clinicaId, natureza])
+  @@index([regraId])
+}
+
+// Parcelas previstas: vencimento nao e data efetiva do recebimento.
+model ParcelaFinanceiraV3 {
+  id                  Int                           @id @default(autoincrement())
+  tituloId            Int
+  titulo              TituloFinanceiroV3            @relation(fields: [tituloId], references: [id])
+  numero              Int
+  vencimento          DateTime                      @db.Date
+  valorPrevisto       Decimal                       @db.Decimal(14, 2)
+  canceladaEm         DateTime?
+  baixas              BaixaFinanceiraV3[]
+  criadoEm            DateTime                      @default(now())
+  atualizadoEm        DateTime                      @updatedAt
+
+  @@unique([tituloId, numero])
+  @@index([vencimento])
+}
+
+// Baixas parciais. Saldo = soma parcelas ativas - soma baixas nao estornadas.
+// Nao apagar historico: estorno sempre registra data, usuario e justificativa.
+model BaixaFinanceiraV3 {
+  id                  Int                           @id @default(autoincrement())
+  parcelaId           Int
+  parcela             ParcelaFinanceiraV3           @relation(fields: [parcelaId], references: [id])
+  valor               Decimal                       @db.Decimal(14, 2)
+  dataEfetiva         DateTime                      @db.Date
+  formaPagamento      String?
+  referencia          String?
+  observacoes         String?                       @db.Text
+  registradoPorId     Int
+  registradoPor        Usuario                       @relation("V3BaixaRegistradaPor", fields: [registradoPorId], references: [id])
+  estornadoEm         DateTime?
+  estornadoPorId      Int?
+  estornadoPor        Usuario?                      @relation("V3BaixaEstornadaPor", fields: [estornadoPorId], references: [id])
+  motivoEstorno       String?                       @db.Text
+  criadoEm            DateTime                      @default(now())
+
+  @@index([parcelaId, dataEfetiva])
+  @@index([dataEfetiva, estornadoEm])
+}
+
+// Configuracao operacional e contratual por clinica e modalidade V3.
+// Dia inicial em REALIZACAO ou ENVIO; dias corridos.
+enum MarcoPrazoLaudoV3 {
+  REALIZACAO
+  ENVIO
+}
+
+model ConfiguracaoLaudoV3 {
+  id                 Int                     @id @default(autoincrement())
+  organizacaoId      Int
+  organizacao        Organizacao             @relation("V3OrgConfiguracaoLaudo", fields: [organizacaoId], references: [id])
+  clinicaId          Int
+  clinica            Clinica                 @relation("V3ClinicaConfiguracaoLaudo", fields: [clinicaId], references: [id])
+  tipoExame          TipoExameTerceirizacao
+  prazoDias          Int
+  marcoPrazo         MarcoPrazoLaudoV3       @default(REALIZACAO)
+  convenios          String[]                @default([])
+  formasPagamento    String[]                @default([])
+  diasVencimento     Int                     @default(0)
+  atualizadoEm       DateTime                @updatedAt
+  criadoEm           DateTime                @default(now())
+
+  @@unique([organizacaoId, clinicaId, tipoExame])
+  @@index([clinicaId, tipoExame])
+}
+
+// Historico imutavel de alteracoes excepcionais de titulo por administrador.
+model AuditoriaTituloV3 {
+  id             Int                @id @default(autoincrement())
+  tituloId       Int
+  titulo         TituloFinanceiroV3 @relation("V3AuditoriasDoTitulo", fields: [tituloId], references: [id])
+  usuarioId      Int
+  usuario        Usuario            @relation("V3AuditoriaTituloUsuario", fields: [usuarioId], references: [id])
+  motivo         String             @db.Text
+  dadosAnteriores Json
+  dadosNovos     Json
+  criadoEm       DateTime           @default(now())
+
+  @@index([tituloId, criadoEm])
+}
+
+// V3 - Bonificacoes independentes dos repasses das clinicas.
+enum ClassificacaoBonificacaoV3 {
+  NAO_CONFERIDO
+  ORIGINAL
+  REPETICAO
+}
+
+enum SituacaoFechamentoBonificacaoV3 {
+  FECHADO
+  APROVADO
+  PAGO
+  REABERTO
+}
+
+model RegraBonificacaoV3 {
+  id Int @id @default(autoincrement())
+  organizacaoId Int
+  organizacao Organizacao @relation(fields: [organizacaoId], references: [id])
+  funcionarioId Int
+  funcionario Usuario @relation("V3BonusFuncionario", fields: [funcionarioId], references: [id])
+  tipoExame TipoExameTerceirizacao
+  valor Decimal @db.Decimal(14, 2)
+  inicioVigencia DateTime @db.Date
+  criadoPorId Int
+  criadoPor Usuario @relation("V3BonusRegraAutor", fields: [criadoPorId], references: [id])
+  criadoEm DateTime @default(now())
+  itens ItemBonificacaoV3[]
+  @@unique([organizacaoId, funcionarioId, tipoExame, inicioVigencia], map: "RegraBonificacaoV3_org_func_tipo_inicio_key")
+  @@index([organizacaoId, funcionarioId, tipoExame])
+}
+
+model FechamentoBonificacaoV3 {
+  id Int @id @default(autoincrement())
+  organizacaoId Int
+  organizacao Organizacao @relation(fields: [organizacaoId], references: [id])
+  competencia String @db.VarChar(7)
+  situacao SituacaoFechamentoBonificacaoV3 @default(FECHADO)
+  revisao Int @default(1)
+  vencimento DateTime @db.Date
+  feriadosLocais String[] @default([])
+  fechadoEm DateTime @default(now())
+  aprovadoEm DateTime?
+  pagoEm DateTime? @db.Date
+  itens ItemBonificacaoV3[]
+  eventos EventoBonificacaoV3[]
+  @@unique([organizacaoId, competencia])
+}
+
+model ItemBonificacaoV3 {
+  id Int @id @default(autoincrement())
+  fechamentoId Int
+  fechamento FechamentoBonificacaoV3 @relation(fields: [fechamentoId], references: [id])
+  exameId Int @unique
+  exame TerceirizacaoExame @relation(fields: [exameId], references: [id])
+  funcionarioId Int
+  funcionario Usuario @relation(fields: [funcionarioId], references: [id])
+  regraId Int
+  regra RegraBonificacaoV3 @relation(fields: [regraId], references: [id])
+  tipoExame TipoExameTerceirizacao
+  valor Decimal @db.Decimal(14, 2)
+  concluidoEm DateTime
+  @@index([fechamentoId, funcionarioId])
+}
+
+model EventoBonificacaoV3 {
+  id Int @id @default(autoincrement())
+  organizacaoId Int
+  organizacao Organizacao @relation(fields: [organizacaoId], references: [id])
+  fechamentoId Int?
+  fechamento FechamentoBonificacaoV3? @relation(fields: [fechamentoId], references: [id], onDelete: Restrict)
+  exameId Int?
+  exame TerceirizacaoExame? @relation(fields: [exameId], references: [id], onDelete: Restrict)
+  usuarioId Int
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+  acao String
+  motivo String
+  dados Json?
+  criadoEm DateTime @default(now())
+  @@index([organizacaoId, criadoEm])
+  @@index([fechamentoId, criadoEm])
+  @@index([exameId, criadoEm])
 }

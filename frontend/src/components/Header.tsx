@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Bell, MapPin, Search, Stethoscope, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -80,6 +80,8 @@ function nomeOpcao(opcao: OpcaoProcedimentoBusca) {
 
 export function Header() {
   const router = useRouter();
+  const pathname = usePathname();
+  const emTerceirizacao = pathname.startsWith("/terceirizacao");
   const { usuario, temPermissao, sair } = useAuth();
   const [menuAberto, setMenuAberto] = useState(false);
   const [busca, setBusca] = useState("");
@@ -153,6 +155,7 @@ export function Header() {
   }, []);
 
   useEffect(() => {
+    if (emTerceirizacao) return;
     const termo = busca.trim();
     if (termo.length < 2) return;
 
@@ -177,7 +180,7 @@ export function Header() {
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [busca]);
+  }, [busca, emTerceirizacao]);
 
   function abrirResultado(resultado: ResultadoBusca) {
     setBuscaAberta(false);
@@ -232,6 +235,7 @@ export function Header() {
   return (
     <>
       <header className="relative z-40 flex h-20 items-center gap-6 border-b border-xango-border bg-white px-6">
+        {!emTerceirizacao && (
         <div className="flex flex-1 justify-center">
           <div
             className="relative w-full max-w-2xl"
@@ -335,9 +339,17 @@ export function Header() {
             )}
           </div>
         </div>
+        )}
+        {emTerceirizacao && <div className="flex-1" />}
 
         <div className="flex items-center gap-3">
-          {temPermissao("atendimentos.criar") && (
+          {emTerceirizacao && temPermissao("terceirizacao.producao.criar") && (
+            <Link href="/terceirizacao/producao"
+              className="rounded-md bg-xango-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-xango-primary-hover">
+              + Novo lançamento de exame
+            </Link>
+          )}
+          {!emTerceirizacao && temPermissao("atendimentos.criar") && (
             <Link
               href="/atendimentos/novo"
               data-aprendiz="novo-atendimento"
