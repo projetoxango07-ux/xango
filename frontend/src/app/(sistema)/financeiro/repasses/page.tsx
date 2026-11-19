@@ -18,6 +18,7 @@ import {
   Eye,
   FileCheck2,
   FileText,
+  Printer,
   HandCoins,
   Loader2,
   Paperclip,
@@ -31,6 +32,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
+import { abrirImpressaoRepasseV121 } from "@/components/ImpressaoRepasseV121";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333";
 
@@ -40,7 +42,10 @@ type Clinica = { id: number; nome: string };
 
 type GuiaDisponivel = {
   guiaId: number;
+  itemGuiaId: number;
+  procedimento: string;
   codigoVoucher: string | null;
+  realizadaEm: string | null;
   pacienteId: number;
   paciente: string;
   clinicaId: number;
@@ -58,6 +63,8 @@ type ItemRepasse = {
   paciente: string;
   valor: number;
   confirmadoEm: string;
+  procedimentos: Array<{ itemGuiaId: number; nome: string; valor: number; realizadaEm: string | null }>;
+  legado: boolean;
 };
 
 type DocumentoRepasse = {
@@ -338,6 +345,7 @@ export default function RepassesPage() {
   const [dataPagamento, setDataPagamento] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [selecionadas, setSelecionadas] = useState<number[]>([]);
+  const [novoRepasseCriadoId, setNovoRepasseCriadoId] = useState<number | null>(null);
 
   const [abertos, setAbertos] = useState<number[]>([]);
   const [carregando, setCarregando] = useState(true);
@@ -418,7 +426,7 @@ export default function RepassesPage() {
   const valorSelecionado = useMemo(
     () =>
       guiasNovaClinica
-        .filter((guia) => selecionadas.includes(guia.guiaId))
+        .filter((guia) => selecionadas.includes(guia.itemGuiaId))
         .reduce((total, guia) => total + guia.valorRepasse, 0),
     [guiasNovaClinica, selecionadas]
   );
@@ -427,6 +435,13 @@ export default function RepassesPage() {
     setSelecionadas((atuais) =>
       atuais.includes(id) ? atuais.filter((item) => item !== id) : [...atuais, id]
     );
+  }
+
+  // API limita cada solicitação a 100 procedimentos; jamais enviar mais do que aceita.
+  const idsElegiveis = guiasNovaClinica.map((item) => item.itemGuiaId).slice(0, 100);
+  const todasSelecionadas = idsElegiveis.length > 0 && idsElegiveis.every((id) => selecionadas.includes(id));
+  function selecionarTodas(ativar: boolean) {
+    setSelecionadas(ativar ? idsElegiveis : []);
   }
 
   function limparAvisos() {
@@ -443,7 +458,7 @@ export default function RepassesPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          guiaIds: selecionadas,
+          itemGuiaIds: selecionadas,
           dataPagamentoSolicitada: dataPagamento,
           observacoes: observacoes.trim() || null,
         }),
@@ -451,7 +466,8 @@ export default function RepassesPage() {
       const resultado = await resposta.json();
       if (!resposta.ok) throw new Error(resultado.erro || "Não foi possível criar o repasse.");
 
-      setMensagem(`Solicitação ${resultado.codigoPublico} criada e colocada automaticamente em análise.`);
+      setMensagem(`Solicitação ${resultado.codigoPublico} criada e colocada automaticamente em análise. Você já pode imprimir o demonstrativo.`);
+      setNovoRepasseCriadoId(Number(resultado.id));
       setSelecionadas([]);
       setObservacoes("");
       setNovaAberta(false);
@@ -716,14 +732,21 @@ export default function RepassesPage() {
         <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{erro}</div>
       )}
       {mensagem && (
-        <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{mensagem}</div>
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          <span>{mensagem}</span>
+          {novoRepasseCriadoId !== null && (
+            <button type="button" onClick={() => void abrirImpressaoRepasseV121(novoRepasseCriadoId, API_URL)} className="inline-flex items-center gap-2 rounded-lg bg-xango-primary px-4 py-2.5 text-xs font-bold text-white">
+              <Printer size={16}/> Imprimir solicitação (escolher colunas)
+            </button>
+          )}
+        </div>
       )}
 
       <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <CardResumo
           titulo="Disponível para solicitar"
           valor={moeda(dados?.resumo.disponivel || 0)}
-          apoio={`${dados?.resumo.quantidadeDisponivel || 0} guia(s) confirmada(s)`}
+          apoio={`${dados?.resumo.quantidadeDisponivel || 0} procedimento(s) realizado(s) disponível(is)`}
           icone={<HandCoins size={20} />}
         />
         <CardResumo
@@ -793,11 +816,11 @@ export default function RepassesPage() {
 
             {!clinicaNova ? (
               <div className="mt-5 rounded-lg border border-dashed border-xango-border p-8 text-center text-sm text-xango-muted">
-                Selecione uma clínica para visualizar as guias confirmadas disponíveis.
+                Selecione uma clínica para visualizar os procedimentos realizados disponíveis para repasse.
               </div>
             ) : guiasNovaClinica.length === 0 ? (
               <div className="mt-5 rounded-lg border border-dashed border-xango-border p-8 text-center text-sm text-xango-muted">
-                Esta clínica não possui guias confirmadas disponíveis para uma nova solicitação.
+                Esta clínica não possui procedimentos realizados disponíveis para repasse.
               </div>
             ) : (
               <div className="mt-5 overflow-hidden rounded-lg border border-xango-border">
@@ -805,28 +828,32 @@ export default function RepassesPage() {
                   <table className="min-w-230 w-full text-left text-sm">
                     <thead className="border-b border-xango-border bg-slate-50 text-xs uppercase tracking-wide text-xango-muted">
                       <tr>
-                        <th className="w-12 px-4 py-3" />
-                        <th className="px-4 py-3">Paciente / voucher</th>
-                        <th className="px-4 py-3">Confirmado em</th>
+                        <th className="w-12 px-4 py-3">
+                          <input type="checkbox" aria-label="Selecionar todos os procedimentos elegíveis" title="Selecionar até 100 procedimentos nesta solicitação" checked={todasSelecionadas} onChange={(e) => selecionarTodas(e.target.checked)} className="h-4 w-4 accent-teal-700" />
+                        </th>
+                        <th className="px-4 py-3">Paciente / voucher / procedimento</th>
+                        <th className="px-4 py-3">Realizado em</th>
                         <th className="px-4 py-3 text-right">Repasse</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-xango-border">
                       {guiasNovaClinica.map((guia) => (
-                        <tr key={guia.guiaId} className={selecionadas.includes(guia.guiaId) ? "bg-teal-50/50" : ""}>
+                        <tr key={guia.itemGuiaId} className={selecionadas.includes(guia.itemGuiaId) ? "bg-teal-50/50" : ""}>
                           <td className="px-4 py-3">
                             <input
                               type="checkbox"
-                              checked={selecionadas.includes(guia.guiaId)}
-                              onChange={() => alternarGuia(guia.guiaId)}
+                              checked={selecionadas.includes(guia.itemGuiaId)}
+                              disabled={!idsElegiveis.includes(guia.itemGuiaId)}
+                              title={!idsElegiveis.includes(guia.itemGuiaId) ? "Limite de 100 procedimentos por solicitação" : "Selecionar procedimento"}
+                              onChange={() => alternarGuia(guia.itemGuiaId)}
                               className="h-4 w-4 accent-teal-700"
                             />
                           </td>
                           <td className="px-4 py-3">
                             <p className="font-semibold text-xango-text">{guia.paciente}</p>
-                            <p className="mt-0.5 text-xs text-xango-muted">{guia.codigoVoucher || `Guia #${guia.guiaId}`}</p>
+                            <p className="mt-0.5 text-xs text-xango-muted">{guia.codigoVoucher || `Guia #${guia.guiaId}`} • {guia.procedimento}</p>
                           </td>
-                          <td className="px-4 py-3 text-xango-muted">{dataCurta(guia.confirmadoEm)}</td>
+                          <td className="px-4 py-3 text-xango-muted">{dataCurta(guia.realizadaEm || guia.confirmadoEm)}</td>
                           <td className="px-4 py-3 text-right font-semibold text-xango-text">{moeda(guia.valorRepasse)}</td>
                         </tr>
                       ))}
@@ -836,6 +863,15 @@ export default function RepassesPage() {
               </div>
             )}
 
+            {guiasNovaClinica.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-xango-muted">
+                <span>Seleção múltipla por clínica: {idsElegiveis.length} procedimento(s) elegível(is) neste lote.</span>
+                <button type="button" onClick={() => selecionarTodas(!todasSelecionadas)} className="font-semibold text-xango-primary hover:underline">
+                  {todasSelecionadas ? "Desmarcar todos" : "Selecionar todos"}
+                </button>
+                {guiasNovaClinica.length > 100 && <span className="text-amber-700">Limite de 100 por solicitação; faça outra solicitação para os demais.</span>}
+              </div>
+            )}
             <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
               <label className="text-xs font-semibold text-xango-muted">
                 Observações da solicitação
@@ -850,7 +886,7 @@ export default function RepassesPage() {
               <div className="min-w-65 rounded-lg bg-xango-background p-4">
                 <p className="text-xs uppercase tracking-wide text-xango-muted">Selecionado</p>
                 <p className="mt-1 text-xl font-bold text-xango-text">{moeda(valorSelecionado)}</p>
-                <p className="mt-1 text-xs text-xango-muted">{selecionadas.length} guia(s)</p>
+                <p className="mt-1 text-xs text-xango-muted">{selecionadas.length} procedimento(s)</p>
                 <button
                   type="button"
                   disabled={processando || !clinicaNova || selecionadas.length === 0 || !dataPagamento}
@@ -992,6 +1028,9 @@ export default function RepassesPage() {
                       <span className="flex items-center gap-1"><CalendarClock size={14} />Solicitado {dataHora(repasse.solicitadoEm)}</span>
                       <span>Pagamento pedido: {dataCurta(repasse.dataPagamentoSolicitada)}</span>
                       <span>{repasse.quantidadeGuias} guia(s)</span>
+                      <span>{repasse.itens.some((item) => item.legado)
+                        ? "Repasse histórico sem detalhamento individual"
+                        : `${repasse.itens.reduce((total, item) => total + item.procedimentos.length, 0)} procedimento(s)`}</span>
                     </div>
                     {repasse.motivoRecusa && (
                       <p className="mt-2 text-sm text-red-600"><strong>Motivo da recusa:</strong> {repasse.motivoRecusa}</p>
@@ -1000,6 +1039,9 @@ export default function RepassesPage() {
 
                   <div className="min-w-52 text-right">
                     <p className="text-xl font-bold text-xango-text">{moeda(repasse.valorTotal)}</p>
+                    <button type="button" onClick={() => void abrirImpressaoRepasseV121(repasse.id, API_URL)} className="mt-2 mr-3 inline-flex items-center gap-1 text-xs font-semibold text-xango-primary" title="Imprimir demonstrativo por guia">
+                      <Printer size={14}/> Imprimir solicitação
+                    </button>
                     <button
                       type="button"
                       onClick={() => setAbertos((atuais) =>
@@ -1104,11 +1146,12 @@ export default function RepassesPage() {
 
                     <div className="mt-4 overflow-hidden rounded-lg border border-xango-border bg-white">
                       <div className="overflow-x-auto">
-                        <table className="w-full min-w-180 text-left text-sm">
+                        <table className="w-full min-w-[850px] text-left text-sm">
                           <thead className="border-b border-xango-border bg-slate-50 text-xs uppercase tracking-wide text-xango-muted">
                             <tr>
                               <th className="px-4 py-3">Paciente / voucher</th>
-                              <th className="px-4 py-3">Confirmação</th>
+                              <th className="px-4 py-3">Realizado em</th>
+                              <th className="px-4 py-3">Confirmado em</th>
                               <th className="px-4 py-3 text-right">Valor</th>
                               <th className="px-4 py-3 text-right">Análise</th>
                             </tr>
@@ -1119,6 +1162,18 @@ export default function RepassesPage() {
                                 <td className="px-4 py-3">
                                   <p className="font-semibold text-xango-text">{item.paciente}</p>
                                   <p className="mt-0.5 text-xs text-xango-muted">{item.codigoVoucher || `Guia #${item.guiaId}`}</p>
+                                  <p className="mt-1 text-xs text-xango-muted">{item.legado
+                                    ? "Repasse histórico da guia"
+                                    : item.procedimentos.map((p) => p.nome).join(" • ")}</p>
+                                </td>
+                                <td className="px-4 py-3 text-xango-muted">
+                                  {item.legado ? (
+                                    <span title="O repasse histórico não tem datas individualizadas por exame">Não individualizado</span>
+                                  ) : (
+                                    <div className="space-y-1">{item.procedimentos.map((proc) => (
+                                      <p key={proc.itemGuiaId}>{proc.nome}: {dataCurta(proc.realizadaEm)}</p>
+                                    ))}</div>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3 text-xango-muted">{dataCurta(item.confirmadoEm)}</td>
                                 <td className="px-4 py-3 text-right font-semibold text-xango-text">{moeda(item.valor)}</td>

@@ -8,6 +8,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client.js";
 import { registrarRotasTerceirizacao } from "./terceirizacao.js";
+import { criarRotasFinanceiroV12 } from "./financeiro-v12.js";
+import { criarRotasParcelamentosV12, temCoberturaParcelamentoV12 } from "./parcelamentos-v12.js";
+import { criarRotasTrocaClinicaV122 } from "./troca-clinica-v122.js";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL!,
@@ -327,6 +330,8 @@ const PERMISSOES_DISPONIVEIS = [
   "procedimentos.editar",
   "financeiro.visualizar",
   "financeiro.editar",
+  "financeiro.caixa.visualizar",
+  "financeiro.saldos_bancarios.visualizar",
   "relatorios.visualizar",
   "configuracoes.visualizar",
   "configuracoes.editar",
@@ -391,6 +396,7 @@ const PERMISSOES_POR_PERFIL: Record<UsuarioAutenticado["perfil"], Permissao[]> =
     "pacientes.editar",
     "clinicas.visualizar",
     "procedimentos.visualizar",
+    "financeiro.caixa.visualizar",
   ],
   GERENTE: [
     "dashboard.visualizar",
@@ -413,6 +419,7 @@ const PERMISSOES_POR_PERFIL: Record<UsuarioAutenticado["perfil"], Permissao[]> =
     "procedimentos.editar",
     "financeiro.visualizar",
     "financeiro.editar",
+    "financeiro.caixa.visualizar",
     "relatorios.visualizar",
   ],
   ADMINISTRADOR: [...PERMISSOES_DISPONIVEIS],
@@ -428,7 +435,7 @@ const GRUPOS_PERMISSOES = [
   { modulo: "Pacientes", permissoes: ["pacientes.visualizar", "pacientes.editar"] },
   { modulo: "Clínicas", permissoes: ["clinicas.visualizar", "clinicas.editar"] },
   { modulo: "Procedimentos", permissoes: ["procedimentos.visualizar", "procedimentos.editar"] },
-  { modulo: "Financeiro", permissoes: ["financeiro.visualizar", "financeiro.editar"] },
+  { modulo: "Financeiro", permissoes: ["financeiro.visualizar", "financeiro.editar", "financeiro.caixa.visualizar", "financeiro.saldos_bancarios.visualizar"] },
   { modulo: "Relatórios", permissoes: ["relatorios.visualizar"] },
   { modulo: "Configurações", permissoes: ["configuracoes.visualizar", "configuracoes.editar"] },
   { modulo: "Usuários", permissoes: ["usuarios.visualizar", "usuarios.editar"] },
@@ -447,6 +454,11 @@ function permissoesEfetivas(usuario: Pick<UsuarioAutenticado, "perfil" | "usarPe
 
 function possuiPermissao(usuario: UsuarioAutenticado, permissao: Permissao) {
   return permissoesEfetivas(usuario).includes(permissao);
+}
+
+function podeVerSaldoBancario(req: express.Request): boolean {
+  const usuario = (req as RequestComUsuario).usuarioAutenticado;
+  return Boolean(usuario && possuiPermissao(usuario, "financeiro.saldos_bancarios.visualizar"));
 }
 
 function normalizarEmail(valor: unknown) {
@@ -657,6 +669,7 @@ function permissaoDaRota(req: express.Request): Permissao | null {
   if (caminho.startsWith("/pacientes")) return leitura ? "pacientes.visualizar" : "pacientes.editar";
   if (caminho.startsWith("/clinicas")) return leitura ? "clinicas.visualizar" : "clinicas.editar";
   if (caminho.startsWith("/procedimentos")) return leitura ? "procedimentos.visualizar" : "procedimentos.editar";
+  if (caminho.startsWith("/financeiro/v12") && leitura) return "financeiro.caixa.visualizar";
   if (caminho.startsWith("/financeiro")) return leitura ? "financeiro.visualizar" : "financeiro.editar";
   if (caminho.startsWith("/relatorios")) return "relatorios.visualizar";
   if (caminho.startsWith("/configuracoes")) return leitura ? "configuracoes.visualizar" : "configuracoes.editar";
@@ -879,6 +892,37 @@ registrarRotasTerceirizacao(app, prisma, (req, permissao) => {
   return !!usuario && possuiPermissao(usuario, permissao as Permissao);
 });
 app.use(autorizarRota);
+
+// V1.2.2: alteração integral de clínica, com simulação, auditoria e travas financeiras.
+app.use("/guias", criarRotasTrocaClinicaV122(prisma, {
+  organizacaoAtualId,
+  usuarioAtualId,
+  recalcularGuia: recalcularStatusFinanceiroGuia,
+}));
+
+// V1.2: modulo financeiro aditivo; autenticacao e permissoes ja aplicadas.
+app.use("/financeiro/v12", criarRotasFinanceiroV12(prisma, {
+  organizacaoAtualId, usuarioAtualId,
+  podeVerSaldoBancario,
+  podeSupervisionarCaixas: (req) => {
+    const usuario = (req as RequestComUsuario).usuarioAutenticado;
+    return usuario?.perfil === "ADMINISTRADOR" || usuario?.perfil === "DESENVOLVEDOR";
+  },
+  podeOperar: (req) => {
+    const usuario = (req as RequestComUsuario).usuarioAutenticado;
+    return Boolean(usuario && possuiPermissao(usuario, "financeiro.editar"));
+  },
+}));
+
+// Boleto e PIX parcelado: somente a baixa individual gera dinheiro recebido.
+app.use("/financeiro/v12/parcelamentos", criarRotasParcelamentosV12(prisma, {
+  organizacaoAtualId, usuarioAtualId, podeVerSaldoBancario,
+  podeOperar: (req) => {
+    const usuario = (req as RequestComUsuario).usuarioAutenticado;
+    return Boolean(usuario && possuiPermissao(usuario, "financeiro.editar"));
+  },
+  recalcularGuia: recalcularStatusFinanceiroGuia,
+}));
 
 // ======================================================
 // TREINAMENTO DO USUÁRIO
@@ -1368,6 +1412,7 @@ app.patch("/configuracoes/gerais", async (req, res) => {
 
 const FORMAS_PAGAMENTO_CONFIGURAVEIS = [
   "PIX",
+  "PIX_PARCELADO",
   "DINHEIRO",
   "CARTAO_CREDITO",
   "CARTAO_DEBITO",
@@ -1381,6 +1426,7 @@ type FormaPagamentoConfiguravel =
 
 const ROTULOS_FORMAS_PAGAMENTO: Record<FormaPagamentoConfiguravel, string> = {
   PIX: "Pix",
+  PIX_PARCELADO: "PIX parcelado",
   DINHEIRO: "Dinheiro",
   CARTAO_CREDITO: "Cartão de crédito",
   CARTAO_DEBITO: "Cartão de débito",
@@ -1488,19 +1534,19 @@ function rotuloTipoContaFinanceira(tipo: string) {
   return mapa[tipo] || tipo.replaceAll("_", " ");
 }
 
-function serializarContaFinanceira(conta: any) {
+function serializarContaFinanceira(conta: any, saldoBancarioPermitido = true) {
   return {
     id: conta.id,
     nome: conta.nome,
     tipo: conta.tipo,
     tipoLabel: rotuloTipoContaFinanceira(conta.tipo),
-    saldoInicial: Number(conta.saldoInicial || 0),
-    saldoInicialEm: conta.saldoInicialEm || null,
+    saldoInicial: conta.tipo === "CAIXA" || saldoBancarioPermitido ? Number(conta.saldoInicial || 0) : null,
+    saldoInicialEm: conta.tipo === "CAIXA" || saldoBancarioPermitido ? conta.saldoInicialEm || null : null,
     ativo: conta.ativo,
   };
 }
 
-function serializarFormaRecebimento(forma: any) {
+function serializarFormaRecebimento(forma: any, saldoBancarioPermitido = true, usuarioCaixaId?: number) {
   return {
     id: forma.id,
     nome: forma.nome,
@@ -1517,8 +1563,10 @@ function serializarFormaRecebimento(forma: any) {
           ativo: forma.operadora.ativo,
         }
       : null,
-    contaPadrao: forma.contaPadrao
-      ? serializarContaFinanceira(forma.contaPadrao)
+    contaPadrao: forma.contaPadrao &&
+      (saldoBancarioPermitido || (forma.contaPadrao.tipo === "CAIXA" &&
+        forma.contaPadrao.responsavelCaixaId === usuarioCaixaId))
+      ? serializarContaFinanceira(forma.contaPadrao, saldoBancarioPermitido)
       : null,
     tarifas: (forma.tarifas || []).map((tarifa: any) => ({
       id: tarifa.id,
@@ -1628,7 +1676,7 @@ async function obterNumeracaoFinanceiraAtual() {
 
 // Endpoint leve para os próximos módulos consumirem as preferências sem
 // precisar carregar a tela administrativa de Configurações.
-app.get("/preferencias/financeiro", async (_req, res) => {
+app.get("/preferencias/financeiro", async (req, res) => {
   try {
     const organizacao = await obterConfiguracoesOrganizacaoAtual();
     const formas = normalizarFormasPagamentoConfiguradas(
@@ -1647,8 +1695,12 @@ app.get("/preferencias/financeiro", async (_req, res) => {
         label: ROTULOS_FORMAS_PAGAMENTO[codigo],
       })),
       maxParcelasCredito: MAX_PARCELAS_CREDITO,
-      contasFinanceiras: configuracao.contas.map(serializarContaFinanceira),
-      formasRecebimento: configuracao.formas.map(serializarFormaRecebimento),
+      contasFinanceiras: configuracao.contas
+        .filter((conta) => podeVerSaldoBancario(req) ||
+          (conta.tipo === "CAIXA" && conta.responsavelCaixaId === usuarioAtualId()))
+        .map((conta) => serializarContaFinanceira(conta, podeVerSaldoBancario(req))),
+      formasRecebimento: configuracao.formas.map((forma) =>
+        serializarFormaRecebimento(forma, podeVerSaldoBancario(req), usuarioAtualId())),
       contasPadraoRepasse: configuracao.padroesRepasse.map((item: any) => ({
         forma: item.forma,
         contaFinanceiraId: item.contaFinanceiraId,
@@ -1672,8 +1724,9 @@ app.get("/preferencias/financeiro", async (_req, res) => {
   }
 });
 
-app.get("/financeiro/configuracao-recebimentos", async (_req, res) => {
+app.get("/financeiro/configuracao-recebimentos", async (req, res) => {
   try {
+    if (!podeVerSaldoBancario(req)) return res.status(403).json({ erro: "Cadastro de contas bancárias restrito aos autorizados." });
     const organizacaoId = organizacaoAtualId();
     const configuracao = await buscarConfiguracaoRecebimentos(
       organizacaoId,
@@ -1694,13 +1747,13 @@ app.get("/financeiro/configuracao-recebimentos", async (_req, res) => {
         codigo,
         label: rotuloFormaPagamentoRepasse(codigo),
       })),
-      contas: configuracao.contas.map(serializarContaFinanceira),
+      contas: configuracao.contas.map((conta) => serializarContaFinanceira(conta)),
       operadoras: configuracao.operadoras.map((operadora: any) => ({
         id: operadora.id,
         nome: operadora.nome,
         ativo: operadora.ativo,
       })),
-      formasRecebimento: configuracao.formas.map(serializarFormaRecebimento),
+      formasRecebimento: configuracao.formas.map((forma) => serializarFormaRecebimento(forma)),
       contasPadraoRepasse: configuracao.padroesRepasse.map((item: any) => ({
         forma: item.forma,
         contaFinanceiraId: item.contaFinanceiraId,
@@ -1716,6 +1769,7 @@ app.get("/financeiro/configuracao-recebimentos", async (_req, res) => {
 
 app.put("/financeiro/configuracao-recebimentos", async (req, res) => {
   try {
+    if (!podeVerSaldoBancario(req)) return res.status(403).json({ erro: "Alteração de contas bancárias restrita aos autorizados." });
     const organizacaoId = organizacaoAtualId();
     const contasRecebidas = Array.isArray(req.body?.contas)
       ? req.body.contas
@@ -1774,13 +1828,16 @@ app.put("/financeiro/configuracao-recebimentos", async (req, res) => {
             select: { id: true },
           });
           if (!existente) throw new Error("CONTA_INVALIDA");
+          const contaProtegida = await tx.contaFinanceira.findUnique({ where: { id } });
+          if (contaProtegida?.responsavelCaixaId && tipo !== "CAIXA") {
+            throw new Error("CONTA_CAIXA_INDIVIDUAL_TIPO_IMUTAVEL");
+          }
           conta = await tx.contaFinanceira.update({
             where: { id },
             data: {
               nome,
               tipo: tipo as any,
-              saldoInicial,
-              saldoInicialEm,
+              ...(contaProtegida?.responsavelCaixaId ? {} : { saldoInicial, saldoInicialEm }),
               ativo: item?.ativo !== false,
             },
           });
@@ -1962,13 +2019,13 @@ app.put("/financeiro/configuracao-recebimentos", async (req, res) => {
       ok: true,
       mensagem: "Contas e formas de recebimento atualizadas com sucesso.",
       maxParcelasCredito: MAX_PARCELAS_CREDITO,
-      contas: configuracao.contas.map(serializarContaFinanceira),
+      contas: configuracao.contas.map((conta) => serializarContaFinanceira(conta)),
       operadoras: configuracao.operadoras.map((operadora: any) => ({
         id: operadora.id,
         nome: operadora.nome,
         ativo: operadora.ativo,
       })),
-      formasRecebimento: configuracao.formas.map(serializarFormaRecebimento),
+      formasRecebimento: configuracao.formas.map((forma) => serializarFormaRecebimento(forma)),
       contasPadraoRepasse: configuracao.padroesRepasse.map((item: any) => ({
         forma: item.forma,
         contaFinanceiraId: item.contaFinanceiraId,
@@ -2457,6 +2514,7 @@ function mapearFormaPagamento(
   forma: string | undefined
 ):
   | "PIX"
+  | "PIX_PARCELADO"
   | "DINHEIRO"
   | "CARTAO_CREDITO"
   | "CARTAO_DEBITO"
@@ -2466,6 +2524,7 @@ function mapearFormaPagamento(
   const valor = (forma || "").trim().toLowerCase();
 
   if (valor === "pix") return "PIX";
+  if (valor === "pix_parcelado") return "PIX_PARCELADO";
   if (valor === "dinheiro") return "DINHEIRO";
   if (valor === "credito" || valor === "cartao_credito") return "CARTAO_CREDITO";
   if (valor === "debito" || valor === "cartao_debito") return "CARTAO_DEBITO";
@@ -2558,6 +2617,7 @@ async function registrarEstornoVinculado(
     select: {
       organizacaoId: true,
       geradaPorId: true,
+      clinica: { select: { id: true, nome: true, documento: true } },
     },
   });
 
@@ -2640,13 +2700,35 @@ async function registrarEstornoVinculado(
       },
     });
 
+    // Fotografia do parceiro no momento do estorno; não depende da clínica atual da guia.
+    await tx.auditoriaFinanceira.create({ data: {
+      organizacaoId, usuarioId: usuarioAtualId(), entidade: "ESTORNO", registroId: estornoCriado.id,
+      acao: "EMISSAO_ESTORNO", motivo,
+      dadosNovos: { guiaId, clinicaId: guia.clinica.id, clinicaNome: guia.clinica.nome,
+        documentoClinica: guia.clinica.documento ?? null },
+    } });
     estornosCriados.push(estornoCriado);
 
     if (pagamento.contaFinanceiraId && valorAplicado > 0.009) {
+      const contaEstorno = await tx.contaFinanceira.findFirst({
+        where: { id: pagamento.contaFinanceiraId, organizacaoId },
+        select: { tipo: true, responsavelCaixaId: true },
+      });
+      const sessaoEstorno = contaEstorno?.tipo === "CAIXA" ? await tx.sessaoCaixa.findFirst({
+        where: { organizacaoId, contaFinanceiraId: pagamento.contaFinanceiraId,
+          abertoPorId: usuarioAtualId(), status: "ABERTA" },
+      }) : null;
+      if (contaEstorno?.tipo === "CAIXA" && (
+        contaEstorno.responsavelCaixaId !== usuarioAtualId() || !sessaoEstorno ||
+        sessaoEstorno.dataMovimento.toISOString().slice(0, 10) !== dataIsoSaoPaulo()
+      )) {
+        throw new Error("ESTORNO_CAIXA_INDIVIDUAL_NECESSARIO");
+      }
       await tx.movimentacaoConta.create({
         data: {
           organizacaoId,
           contaFinanceiraId: pagamento.contaFinanceiraId,
+          sessaoCaixaId: sessaoEstorno?.id || null,
           tipo: "SAIDA",
           origem: "ESTORNO",
           valor: valorAplicado,
@@ -8023,6 +8105,28 @@ const GENEROS_PACIENTE_VALIDOS = new Set([
   "PREFERE_NAO_INFORMAR",
 ]);
 
+// Regra operacional do voucher: somente os quatro dados acordados sao obrigatorios.
+// Os demais campos integram o indicador de preenchimento cadastral, mas nao
+// bloqueiam a emissao de uma guia quitada ou autorizada por parcelamento.
+function cadastroMinimoParaVoucher(paciente: {
+  nome?: string | null;
+  dataNascimento?: Date | string | null;
+  cpf?: string | null;
+  telefone?: string | null;
+}) {
+  const obrigatorios: Array<[string, boolean]> = [
+    ["Nome completo", Boolean(paciente.nome?.trim())],
+    ["Data de nascimento", Boolean(paciente.dataNascimento)],
+    ["CPF", Boolean(paciente.cpf?.trim())],
+    ["Telefone", Boolean(paciente.telefone?.trim())],
+  ];
+  const faltantes = obrigatorios.filter(([, preenchido]) => !preenchido).map(([campo]) => campo);
+  return {
+    completo: faltantes.length === 0,
+    faltantes,
+  };
+}
+
 function cadastroPaciente(paciente: any) {
   const obrigatorios: Array<[string, boolean]> = [
     ["Nome completo", Boolean(paciente.nome?.trim())],
@@ -8901,6 +9005,10 @@ app.put("/atendimentos/:id", async (req, res) => {
         erro: "Este atendimento está cancelado e não pode mais ser alterado.",
       });
     }
+    if (atendimentoExistente.organizacaoId !== null &&
+        atendimentoExistente.organizacaoId !== organizacaoAtualId()) {
+      return res.status(404).json({ erro: "Atendimento não encontrado." });
+    }
 
     const configuracoesOrganizacao = await obterConfiguracoesOrganizacaoAtual();
     const validadeGuiaMesesPadrao = normalizarValidadeGuiaMeses(
@@ -8909,6 +9017,102 @@ app.put("/atendimentos/:id", async (req, res) => {
 
     const atendimentoAtualizado =
       await prisma.$transaction(async (tx) => {
+        // Serializa edições de guias do mesmo atendimento e evita dados desatualizados.
+        await tx.$queryRaw`SELECT "id" FROM "Atendimento" WHERE "id" = ${atendimentoId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "atendimentoId" = ${atendimentoId} ORDER BY "id" FOR UPDATE`;
+        // V1.2.2: não identificar voucher por clínica/unidade. Um procedimento
+        // salvo mantém sua guia de origem; fusão/divisão exige correção própria.
+        const guiasOriginais = await tx.guia.findMany({
+          where: { atendimentoId },
+          include: {
+            itens: true, pagamentos: true, estornos: true,
+            repasses: { select: { id: true } },
+            planosParcelamento: { where: { ativo: true }, select: { id: true } },
+          },
+        });
+        const origensProcedimento = new Map<number, Set<number>>();
+        for (const original of guiasOriginais) {
+          if (original.status === "CANCELADA") continue;
+          for (const item of original.itens) {
+            if (item.status === "CANCELADO") continue;
+            const origens = origensProcedimento.get(item.procedimentoId) || new Set<number>();
+            origens.add(original.id);
+            origensProcedimento.set(item.procedimentoId, origens);
+          }
+        }
+        const guiaOriginalPorGrupo = new Map<any, number>();
+        const originaisIdentificadas = new Set<number>();
+        const emCentavos = (valor: unknown) => Math.round(Number(valor || 0) * 100);
+        for (const recebida of guias) {
+          const idExplicito = recebida.guiaId === null || recebida.guiaId === undefined
+            ? 0 : Number(recebida.guiaId);
+          if (idExplicito && (!Number.isInteger(idExplicito) || idExplicito < 1)) {
+            throw new Error("V122_IDENTIFICACAO_GUIA_INVALIDA");
+          }
+          const origens = new Set<number>();
+          for (const item of recebida.itens || []) {
+            for (const origem of origensProcedimento.get(Number(item.procedimentoId)) || []) {
+              origens.add(origem);
+            }
+          }
+          if (origens.size > 1) throw new Error("V122_GUIAS_MESCLADAS");
+          const inferido = [...origens][0] || 0;
+          if (idExplicito && inferido && idExplicito !== inferido) {
+            throw new Error("V122_GUIAS_MESCLADAS");
+          }
+          const guiaIdOriginal = idExplicito || inferido;
+          if (!guiaIdOriginal) continue;
+          const original = guiasOriginais.find((g) => g.id === guiaIdOriginal);
+          if (!original || original.status === "CANCELADA") {
+            throw new Error("V122_IDENTIFICACAO_GUIA_INVALIDA");
+          }
+          // A rotina atual identifica itens pelo procedimentoId; duplicatas
+          // exigem itemGuiaId e não podem ser regravadas em bloco com segurança.
+          const idsItens = original.itens.map((i) => i.procedimentoId);
+          if (new Set(idsItens).size !== idsItens.length) throw new Error("V122_ITENS_DUPLICADOS");
+          if (originaisIdentificadas.has(original.id)) throw new Error("V122_GUIAS_DIVIDIDAS");
+          originaisIdentificadas.add(original.id);
+          guiaOriginalPorGrupo.set(recebida, original.id);
+          if (original.clinicaId !== Number(recebida.clinicaId) ||
+              (original.unidadeClinicaId ?? null) !== (recebida.unidadeClinicaId ? Number(recebida.unidadeClinicaId) : null)) {
+            throw new Error("V122_TROCA_CLINICA_FLUXO_ESPECIFICO");
+          }
+          // Um documento com realização, repasse ou parcelamento não deve ser
+          // regravado em bloco; o fluxo administrativo precisa de validação própria.
+          if (original.realizadaEm || original.confirmadaEm ||
+              original.itens.some((i) => i.realizadaEm || i.confirmadaEm || i.status === "REALIZADO") ||
+              original.repasses.length > 0 || original.planosParcelamento.length > 0) {
+            throw new Error("V122_GUIA_OPERACIONAL_PROTEGIDA");
+          }
+          if (original.pagamentos.length || original.estornos.length) {
+            // A rotina legada reescreve canceladoEm; não regravar cancelamentos históricos.
+            if (original.itens.some((i) => i.status === "CANCELADO")) {
+              throw new Error("V122_EDICAO_FINANCEIRA_FLUXO_ESPECIFICO");
+            }
+            const mesmosValores =
+              emCentavos(original.subtotal) === emCentavos(recebida.subtotal) &&
+              emCentavos(original.desconto) === emCentavos(recebida.desconto) &&
+              emCentavos(original.beneficio) === emCentavos(recebida.beneficio) &&
+              emCentavos(original.valorFinal) === emCentavos(recebida.valorFinal) &&
+              emCentavos(recebida.valorPago) === original.pagamentos.reduce((t, p) => t + emCentavos(p.valor), 0) &&
+              emCentavos(recebida.valorEstornado) === original.estornos.reduce((t, e) => t + emCentavos(e.valor), 0);
+            const mesmosItens = original.itens.length === (recebida.itens || []).length &&
+              original.itens.every((item) => {
+                const encontrados = (recebida.itens || []).filter((i: any) => Number(i.procedimentoId) === item.procedimentoId);
+                if (encontrados.length !== 1) return false;
+                const recebido = encontrados[0];
+                return Number(recebido.quantidade ?? 1) === item.quantidade &&
+                  String(recebido.detalhamento || "").trim() === String(item.detalhamento || "").trim() &&
+                  Boolean(recebido.cancelado) === (item.status === "CANCELADO") &&
+                  emCentavos(recebido.valorPaciente) === emCentavos(item.valorPaciente) &&
+                  emCentavos(recebido.valorRepasse) === emCentavos(item.valorRepasse);
+              });
+            if (!mesmosValores || !mesmosItens) {
+              throw new Error("V122_EDICAO_FINANCEIRA_FLUXO_ESPECIFICO");
+            }
+          }
+        }
+
         const codigoPublicoAtendimento =
           atendimentoExistente.codigoPublico ||
           (await gerarCodigoPublicoUnico("ATD"));
@@ -8960,14 +9164,12 @@ app.put("/atendimentos/:id", async (req, res) => {
             }
           }
 
-          // Reaproveita somente a guia da mesma clínica e da mesma unidade.
-          const guiaExistente =
-            atendimentoExistente.guias.find(
-              (guia) =>
-                guia.clinicaId === clinicaId &&
-                (guia.unidadeClinicaId || null) === unidadeClinicaId &&
-                !guiasUtilizadas.has(guia.id)
-            );
+          // A identificação foi validada antes da transação escrever qualquer dado.
+          // Clínica, unidade e agendamento NÃO determinam a identidade do voucher.
+          const guiaOriginalId = guiaOriginalPorGrupo.get(guiaRecebida);
+          const guiaExistente = guiaOriginalId
+            ? guiasOriginais.find((guia) => guia.id === guiaOriginalId)
+            : undefined;
 
           let guiaId: number;
 
@@ -9325,8 +9527,25 @@ app.put("/atendimentos/:id", async (req, res) => {
 
         // Guias antigas que desapareceram da tela não são excluídas.
         // São mantidas no histórico como canceladas.
-        for (const guiaBanco of atendimentoExistente.guias) {
+        for (const guiaBanco of guiasOriginais) {
           if (!guiasUtilizadas.has(guiaBanco.id)) {
+            if (guiaBanco.status === "CANCELADA") continue;
+            const [repasseVinculado, parcelamentoVinculado] = await Promise.all([
+              tx.repasseItem.findFirst({ where: { guiaId: guiaBanco.id }, select: { id: true } }),
+              tx.planoParcelamento.findFirst({ where: { guiaId: guiaBanco.id, ativo: true }, select: { id: true } }),
+            ]);
+
+            const guiaProtegida =
+              guiaBanco.pagamentos.length > 0 ||
+              guiaBanco.estornos.length > 0 ||
+              guiaBanco.realizadaEm !== null || guiaBanco.confirmadaEm !== null ||
+              guiaBanco.itens.some((item) => item.realizadaEm !== null || item.confirmadaEm !== null || item.status === "REALIZADO") ||
+              Boolean(repasseVinculado) || Boolean(parcelamentoVinculado);
+
+            if (guiaProtegida) {
+              throw new Error("GUIA_PROTEGIDA_CONTRA_CANCELAMENTO_AUTOMATICO");
+            }
+
             await tx.guia.update({
               where: {
                 id: guiaBanco.id,
@@ -9382,6 +9601,25 @@ app.put("/atendimentos/:id", async (req, res) => {
 
     return res.json(atendimentoAtualizado);
   } catch (erro) {
+    const mensagensV122: Record<string, string> = {
+      V122_IDENTIFICACAO_GUIA_INVALIDA: "A identidade de uma guia não confere com o atendimento. Reabra a tela.",
+      V122_GUIAS_MESCLADAS: "Não é permitido unir procedimentos de guias existentes por esta tela. Use uma correção administrativa.",
+      V122_GUIAS_DIVIDIDAS: "Não é permitido dividir uma guia existente nesta edição. Use uma correção administrativa.",
+      V122_ITENS_DUPLICADOS: "Esta guia possui procedimentos repetidos. A edição genérica exige uma correção específica por item.",
+      V122_TROCA_CLINICA_FLUXO_ESPECIFICO: "A troca de clínica/unidade de guia salva deve ser feita pelo botão 'Trocar clínica/unidade desta guia'.",
+      V122_GUIA_OPERACIONAL_PROTEGIDA: "Existe realização, repasse ou parcelamento ativo. A guia exige um fluxo de correção específico.",
+      V122_EDICAO_FINANCEIRA_FLUXO_ESPECIFICO: "Os valores ou procedimentos de uma guia com histórico financeiro não podem ser alterados por esta tela. Use a operação específica.",
+    };
+    const chaveV122 = erro instanceof Error ? erro.message : "";
+    if (mensagensV122[chaveV122]) return res.status(409).json({ erro: mensagensV122[chaveV122] });
+    if (
+      erro instanceof Error &&
+      erro.message === "GUIA_PROTEGIDA_CONTRA_CANCELAMENTO_AUTOMATICO"
+    ) {
+      return res.status(409).json({
+        erro: "Alteração bloqueada: a guia possui histórico financeiro, realização ou repasse. Utilize o fluxo específico de correção.",
+      });
+    }
     console.error(
       "Erro ao atualizar atendimento:",
       erro
@@ -11194,6 +11432,7 @@ app.get("/guias", async (_req, res) => {
       include: {
         clinica: true,
         unidadeClinica: true,
+        confirmadaPor: { select: { nome: true } },
         atendimento: {
           include: {
             paciente: true,
@@ -11202,6 +11441,7 @@ app.get("/guias", async (_req, res) => {
         itens: {
           include: {
             procedimento: true,
+            confirmadaPor: { select: { nome: true } },
           },
           orderBy: { id: "asc" },
         },
@@ -11216,6 +11456,28 @@ app.get("/guias", async (_req, res) => {
         atualizadoEm: "desc",
       },
     });
+
+    // Consulta única: evitar uma consulta por guia para planos de parcelamento.
+    const planosVoucherV12 = await prisma.planoParcelamento.findMany({
+      where: {
+        organizacaoId: organizacaoAtualId(),
+        ativo: true,
+        guiaId: { in: guias.map((guia) => guia.id) },
+      },
+      include: {
+        parcelas: {
+          include: {
+            pagamentos: { include: { estornos: { select: { valor: true } } } },
+          },
+        },
+      },
+    });
+    const planosVoucherPorGuia = new Map<number, typeof planosVoucherV12>();
+    for (const plano of planosVoucherV12) {
+      const lista = planosVoucherPorGuia.get(plano.guiaId) || [];
+      lista.push(plano);
+      planosVoucherPorGuia.set(plano.guiaId, lista);
+    }
 
     const registros = guias.map((guia) => {
       const itensAtivos = guia.itens.filter(
@@ -11254,6 +11516,7 @@ app.get("/guias", async (_req, res) => {
         validadeAte: guia.validadeAte,
         confirmadaEm: guia.confirmadaEm,
         realizadaEm: guia.realizadaEm,
+        confirmadaPorNome: guia.confirmadaPor?.nome || null,
 
         atendimento: {
           id: guia.atendimento.id,
@@ -11295,6 +11558,10 @@ app.get("/guias", async (_req, res) => {
           detalhamento: item.detalhamento,
           valorPaciente: Number(item.valorPaciente),
           valorRepasse: Number(item.valorRepasse),
+          status: item.status,
+          realizadaEm: item.realizadaEm || (item.status === "REALIZADO" ? guia.realizadaEm : null),
+          confirmadaEm: item.confirmadaEm || (item.status === "REALIZADO" ? guia.confirmadaEm : null),
+          confirmadaPorNome: item.confirmadaPor?.nome || (item.status === "REALIZADO" ? guia.confirmadaPor?.nome : null),
         })),
 
         itensCancelados: guia.itens
@@ -11319,9 +11586,15 @@ app.get("/guias", async (_req, res) => {
         },
 
         podeImprimir:
-          guia.status === "PAGA" &&
+          guia.status !== "CANCELADA" &&
+          guia.status !== "ESTORNO_PENDENTE" &&
           itensAtivos.length > 0 &&
-          pagoLiquido >= valorFinal,
+          cadastroMinimoParaVoucher(guia.atendimento.paciente).completo &&
+          ((guia.status === "PAGA" && pagoLiquido + 0.009 >= valorFinal) ||
+            temCoberturaParcelamentoV12(
+              planosVoucherPorGuia.get(guia.id) || [],
+              valorFinal - pagoLiquido,
+            )),
       };
     });
 
@@ -11402,7 +11675,7 @@ app.get("/guias/:id", async (req, res) => {
       });
     }
 
-    const situacaoCadastroPaciente = cadastroPaciente(
+    const situacaoCadastroPaciente = cadastroMinimoParaVoucher(
       guia.atendimento.paciente
     );
 
@@ -11421,20 +11694,35 @@ app.get("/guias/:id", async (req, res) => {
     );
 
     const pagoLiquido = Math.max(totalPago - totalEstornado, 0);
+    const saldoFinanceiro = Number(guia.valorFinal) - pagoLiquido;
+    const planosVoucher = await prisma.planoParcelamento.findMany({
+      where: { guiaId: guia.id, organizacaoId: organizacaoAtualId(), ativo: true },
+      include: {
+        parcelas: {
+          include: {
+            pagamentos: { include: { estornos: { select: { valor: true } } } },
+          },
+        },
+      },
+    });
+    const liberadoPorParcelamento = temCoberturaParcelamentoV12(
+      planosVoucher,
+      saldoFinanceiro,
+    );
+    const quitada = guia.status === "PAGA" && pagoLiquido + 0.009 >= Number(guia.valorFinal);
     const motivosBloqueio: string[] = [];
 
     if (itensAtivos.length === 0) {
       motivosBloqueio.push("A guia não possui procedimentos ativos.");
     }
 
-    if (guia.status === "ESTORNO_PENDENTE") {
+    if (guia.status === "CANCELADA") {
+      motivosBloqueio.push("A guia foi cancelada.");
+    } else if (guia.status === "ESTORNO_PENDENTE") {
       motivosBloqueio.push("Existe estorno pendente nesta guia.");
-    } else if (
-      guia.status !== "PAGA" ||
-      pagoLiquido < Number(guia.valorFinal)
-    ) {
+    } else if (!quitada && !liberadoPorParcelamento) {
       motivosBloqueio.push(
-        "O pagamento total da guia ainda não foi concluído."
+        "A guia não está quitada nem possui parcelamento ativo cobrindo todo o saldo pendente."
       );
     }
 
@@ -11450,6 +11738,9 @@ app.get("/guias/:id", async (req, res) => {
       geradaPor,
       elegibilidadeImpressao: {
         podeImprimir: motivosBloqueio.length === 0,
+        liberadoPorParcelamento: !quitada && liberadoPorParcelamento && motivosBloqueio.length === 0,
+        cobertoFinanceiramentePorParcelamento: liberadoPorParcelamento && guia.status !== "CANCELADA" && guia.status !== "ESTORNO_PENDENTE" && itensAtivos.length > 0,
+        saldoFinanceiro: Math.max(0, Math.round(saldoFinanceiro * 100) / 100),
         motivos: motivosBloqueio,
         cadastroPaciente: situacaoCadastroPaciente,
       },
@@ -11471,199 +11762,111 @@ app.get("/guias/:id", async (req, res) => {
 app.post("/guias/:id/confirmar-realizacao", async (req, res) => {
   try {
     const guiaId = Number(req.params.id);
-
-    if (!guiaId) {
-      return res.status(400).json({
-        erro: "ID da guia inválido.",
-      });
+    if (!Number.isInteger(guiaId) || guiaId <= 0) {
+      return res.status(400).json({ erro: "ID da guia inválido." });
     }
-
-    const usuarioId = usuarioAtualId();
-
-    const realizadaEmInformada = req.body?.realizadaEm
-      ? new Date(req.body.realizadaEm)
-      : new Date();
-
-    if (Number.isNaN(realizadaEmInformada.getTime())) {
-      return res.status(400).json({
-        erro: "Data de realização inválida.",
-      });
+    const textoData = typeof req.body?.realizadaEm === "string" ? req.body.realizadaEm.trim() : "";
+    const somenteData = /^\d{4}-\d{2}-\d{2}$/.test(textoData);
+    const dataEfetiva = somenteData
+      ? new Date(`${textoData}T12:00:00-03:00`)
+      : textoData ? new Date(textoData) : new Date();
+    if (Number.isNaN(dataEfetiva.getTime()) ||
+        (somenteData && dataIsoSaoPaulo(dataEfetiva) !== textoData)) {
+      return res.status(400).json({ erro: "Data de realização inválida." });
     }
-
+    if (dataIsoSaoPaulo(dataEfetiva) > dataIsoSaoPaulo()) {
+      return res.status(400).json({ erro: "A data de realização não pode ser futura." });
+    }
+    // Clientes novos selecionam procedimentos. O formato anterior (sem lista)
+    // permanece aceito apenas para confirmar todos os itens ainda ativos.
+    const recebeuSelecao = req.body?.itemGuiaIds !== undefined;
+    const idsInformados = req.body?.itemGuiaIds;
+    if (recebeuSelecao && (!Array.isArray(idsInformados) || !idsInformados.length || idsInformados.length > 100)) {
+      return res.status(400).json({ erro: "Selecione entre 1 e 100 procedimentos." });
+    }
+    const selecionados = recebeuSelecao
+      ? Array.from(new Set<number>((idsInformados as unknown[]).map(Number)))
+      : null;
+    if (selecionados && selecionados.some((id) => !Number.isInteger(id) || id <= 0)) {
+      return res.status(400).json({ erro: "Seleção de procedimentos inválida." });
+    }
     const resultado = await prisma.$transaction(async (tx) => {
-      const guia = await tx.guia.findUnique({
-        where: { id: guiaId },
-        include: {
-          itens: true,
-          pagamentos: true,
-          estornos: true,
-        },
+      await tx.$queryRaw`SELECT a."id" FROM "Atendimento" a JOIN "Guia" g ON g."atendimentoId" = a."id" WHERE g."id" = ${guiaId} FOR UPDATE OF a`;
+      await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
+      const guia = await tx.guia.findFirst({
+        where: { id: guiaId, OR: [{ organizacaoId: organizacaoAtualId() }, { organizacaoId: null }] },
+        include: { itens: true },
       });
-
-      if (!guia) {
-        throw new Error("GUIA_NAO_ENCONTRADA");
+      if (!guia) throw new Error("GUIA_NAO_ENCONTRADA");
+      if (["CANCELADA", "RASCUNHO"].includes(guia.status)) throw new Error("GUIA_INDISPONIVEL_PARA_REALIZACAO");
+      const ativos = guia.itens.filter((item) => item.status !== "CANCELADO");
+      const pendentes = ativos.filter((item) => item.status === "ATIVO");
+      if (!ativos.length) throw new Error("GUIA_SEM_ITENS_ATIVOS");
+      if (!pendentes.length) throw new Error("GUIA_JA_CONFIRMADA");
+      const ids = selecionados || pendentes.map((item) => item.id);
+      if (!ids.length || ids.some((id) => !pendentes.some((item) => item.id === id))) {
+        throw new Error("PROCEDIMENTOS_INDISPONIVEIS");
       }
-
-      if (guia.confirmadaEm) {
-        throw new Error("GUIA_JA_CONFIRMADA");
-      }
-
-      const itensAtivos = guia.itens.filter(
-        (item) => item.status !== "CANCELADO"
-      );
-
-      if (itensAtivos.length === 0) {
-        throw new Error("GUIA_SEM_ITENS_ATIVOS");
-      }
-
-      const totalPago = guia.pagamentos.reduce(
-        (total, pagamento) => total + Number(pagamento.valor),
-        0
-      );
-
-      const totalEstornado = guia.estornos.reduce(
-        (total, estorno) => total + Number(estorno.valor),
-        0
-      );
-
-      const pagoLiquido = Math.max(
-        totalPago - totalEstornado,
-        0
-      );
-
-      const valorFinal = Number(guia.valorFinal);
-
-      if (
-        guia.status !== "PAGA" ||
-        pagoLiquido + 0.009 < valorFinal
-      ) {
-        throw new Error("GUIA_NAO_QUITADA");
-      }
-
-      await tx.itemGuia.updateMany({
-        where: {
-          guiaId,
-          status: "ATIVO",
-        },
+      const agora = new Date();
+      const alterados = await tx.itemGuia.updateMany({
+        where: { guiaId, id: { in: ids }, status: "ATIVO" },
         data: {
           status: "REALIZADO",
-        },
-      });
-
-      const agora = new Date();
-
-      const guiaConfirmada = await tx.guia.update({
-        where: { id: guiaId },
-        data: {
-          confirmadaPorId: usuarioId,
+          realizadaEm: dataEfetiva,
           confirmadaEm: agora,
-          realizadaEm: realizadaEmInformada,
-        },
-        include: {
-          clinica: true,
-          confirmadaPor: true,
-          itens: {
-            include: {
-              procedimento: true,
-            },
-          },
+          confirmadaPorId: usuarioAtualId(),
         },
       });
-
-      const guiasDoAtendimento = await tx.guia.findMany({
-        where: {
-          atendimentoId: guia.atendimentoId,
-        },
-        include: {
-          itens: true,
-        },
-      });
-
-      const guiasConsideradas = guiasDoAtendimento.filter(
-        (guiaAtendimento) =>
-          guiaAtendimento.status !== "CANCELADA"
-      );
-
-      const todasRealizadas =
-        guiasConsideradas.length > 0 &&
-        guiasConsideradas.every((guiaAtendimento) => {
-          const itensNaoCancelados =
-            guiaAtendimento.itens.filter(
-              (item) => item.status !== "CANCELADO"
-            );
-
-          return (
-            itensNaoCancelados.length > 0 &&
-            itensNaoCancelados.every(
-              (item) => item.status === "REALIZADO"
-            )
-          );
-        });
-
-      if (todasRealizadas) {
-        await tx.atendimento.update({
-          where: {
-            id: guia.atendimentoId,
-          },
+      if (alterados.count !== ids.length) throw new Error("PROCEDIMENTOS_INDISPONIVEIS");
+      const itensAtualizados = await tx.itemGuia.findMany({ where: { guiaId, status: { not: "CANCELADO" } } });
+      const guiaIntegralmenteRealizada = itensAtualizados.length > 0 && itensAtualizados.every((item) => item.status === "REALIZADO");
+      if (guiaIntegralmenteRealizada) {
+        await tx.guia.update({
+          where: { id: guiaId },
           data: {
-            status: "CONCLUIDO",
-            etapaAtual: 5,
+            confirmadaEm: agora,
+            confirmadaPorId: usuarioAtualId(),
+            realizadaEm: new Date(Math.max(...itensAtualizados.map((item) =>
+              (item.realizadaEm || guia.realizadaEm || dataEfetiva).getTime()))),
           },
         });
       }
-
+      // Atendimento só é concluído quando TODAS as guias possuem TODOS
+      // os procedimentos ativos realizados, sem interferir no financeiro.
+      const guiasAtendimento = await tx.guia.findMany({
+        where: { atendimentoId: guia.atendimentoId, status: { not: "CANCELADA" } },
+        include: { itens: true },
+      });
+      const atendimentoConcluido = guiasAtendimento.length > 0 && guiasAtendimento.every((g) => {
+        const itens = g.itens.filter((i) => i.status !== "CANCELADO");
+        return itens.length > 0 && itens.every((i) => i.status === "REALIZADO");
+      });
+      if (atendimentoConcluido) {
+        await tx.atendimento.update({ where: { id: guia.atendimentoId }, data: { status: "CONCLUIDO", etapaAtual: 5 } });
+      }
       return {
-        guia: guiaConfirmada,
-        atendimentoConcluido: todasRealizadas,
+        guiaId,
+        itemGuiaIdsConfirmados: ids,
+        procedimentosConfirmados: ids.length,
+        guiaIntegralmenteRealizada,
+        atendimentoConcluido,
+        realizadaEm: dataEfetiva,
       };
     });
-
     return res.json(resultado);
   } catch (erro) {
-    console.error(
-      "Erro ao confirmar realização da guia:",
-      erro
-    );
-
-    if (
-      erro instanceof Error &&
-      erro.message === "GUIA_NAO_ENCONTRADA"
-    ) {
-      return res.status(404).json({
-        erro: "Guia não encontrada.",
-      });
-    }
-
-    if (
-      erro instanceof Error &&
-      erro.message === "GUIA_JA_CONFIRMADA"
-    ) {
-      return res.status(400).json({
-        erro: "Esta guia já teve a realização confirmada.",
-      });
-    }
-
-    if (
-      erro instanceof Error &&
-      erro.message === "GUIA_SEM_ITENS_ATIVOS"
-    ) {
-      return res.status(400).json({
-        erro: "A guia não possui procedimentos ativos para confirmar.",
-      });
-    }
-
-    if (
-      erro instanceof Error &&
-      erro.message === "GUIA_NAO_QUITADA"
-    ) {
-      return res.status(400).json({
-        erro: "A realização só pode ser confirmada após a quitação integral da guia.",
-      });
-    }
-
-    return res.status(500).json({
-      erro: "Não foi possível confirmar a realização da guia.",
-    });
+    console.error("Erro ao confirmar realização dos procedimentos:", erro);
+    const mensagens: Record<string, [number, string]> = {
+      GUIA_NAO_ENCONTRADA: [404, "Guia não encontrada."],
+      GUIA_INDISPONIVEL_PARA_REALIZACAO: [409, "Guia cancelada ou em rascunho não admite confirmação."],
+      GUIA_SEM_ITENS_ATIVOS: [409, "A guia não possui procedimentos ativos."],
+      GUIA_JA_CONFIRMADA: [409, "Todos os procedimentos da guia já foram realizados."],
+      PROCEDIMENTOS_INDISPONIVEIS: [409, "Um ou mais procedimentos já foram confirmados, cancelados ou não pertencem à guia."],
+    };
+    const chave = erro instanceof Error ? erro.message : "";
+    const motivo = mensagens[chave];
+    if (motivo) return res.status(motivo[0]).json({ erro: motivo[1] });
+    return res.status(500).json({ erro: "Não foi possível confirmar a realização." });
   }
 });
 
@@ -11676,6 +11879,16 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
     const guiaId = Number(req.params.id);
     const observacaoGeral =
       String(req.body?.observacao || "").trim() || null;
+    // Data real do crédito, independente da data/hora do lançamento (criadoEm).
+    // Clientes antigos sem este campo continuam registrando no dia atual.
+    const dataTexto = req.body?.dataRecebimento == null
+      ? dataIsoSaoPaulo()
+      : String(req.body.dataRecebimento).trim();
+    const dataRecebimento = dataRepasseRecebida(dataTexto);
+    if (!dataRecebimento || dataRecebimento.data.toISOString().slice(0, 10) !== dataTexto ||
+        dataTexto > dataIsoSaoPaulo()) {
+      return res.status(400).json({ erro: "Informe uma data de recebimento válida, igual ou anterior a hoje." });
+    }
 
     if (!guiaId) {
       return res.status(400).json({
@@ -11694,6 +11907,7 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
     }
 
     const resultado = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
       const guia = await tx.guia.findUnique({
         where: { id: guiaId },
         include: {
@@ -11733,7 +11947,7 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
         }),
         tx.contaFinanceira.findMany({
           where: { organizacaoId, ativo: true },
-          select: { id: true, nome: true },
+          select: { id: true, nome: true, tipo: true, responsavelCaixaId: true },
         }),
       ]);
 
@@ -11871,6 +12085,12 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
           throw new Error("PAGAMENTO_FORMA_DESABILITADA");
         }
 
+        // Boleto/PIX parcelado nao sao recebimento antecipado: baixa manual por parcela.
+        if (forma === "BOLETO" || forma === "PIX_PARCELADO" ||
+            (forma === "CARTAO_CREDITO" && /pix\s*parcelado/i.test(formaRecebimentoNome || ""))) {
+          throw new Error("PAGAMENTO_PARCELAMENTO_MANUAL");
+        }
+
         const contaRecebida = Number(recebido?.contaFinanceiraId);
         const contaRecebidaId =
           Number.isInteger(contaRecebida) && contaRecebida > 0
@@ -11883,6 +12103,23 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
         if (contaFinanceiraId) {
           const conta = contasPorId.get(contaFinanceiraId);
           if (!conta) throw new Error("PAGAMENTO_CONTA_INVALIDA");
+          if (conta.tipo === "CAIXA") {
+            // Caixa físico é fechado por dia/usuário: não lançar retroativos nele.
+            if (dataTexto !== dataIsoSaoPaulo()) {
+              throw new Error("PAGAMENTO_RETROATIVO_CAIXA");
+            }
+            if (forma !== "DINHEIRO" || conta.responsavelCaixaId !== usuarioAtualId()) {
+              throw new Error("PAGAMENTO_CAIXA_USUARIO_INVALIDO");
+            }
+            const sessaoAberta = await tx.sessaoCaixa.findFirst({ where: {
+              organizacaoId, contaFinanceiraId: conta.id, abertoPorId: usuarioAtualId(), status: "ABERTA",
+            } });
+            if (!sessaoAberta || sessaoAberta.dataMovimento.toISOString().slice(0, 10) !== dataIsoSaoPaulo()) {
+              throw new Error("PAGAMENTO_CAIXA_ABERTO_NECESSARIO");
+            }
+          } else if (forma === "DINHEIRO") {
+            throw new Error("PAGAMENTO_DINHEIRO_EXIGE_CAIXA");
+          }
           contaFinanceiraNome = conta.nome;
         } else if (contasAtivas.length > 0) {
           throw new Error("PAGAMENTO_CONTA_OBRIGATORIA");
@@ -11914,7 +12151,18 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
         });
       }
 
-      if (totalNovo > saldo + 0.009) {
+      // Evita receber uma segunda vez valores ja reservados em boletos/PIX parcelados.
+      const planosAbertos = await tx.planoParcelamento.findMany({
+        where: { guiaId, organizacaoId, ativo: true },
+        include: { parcelas: { include: { pagamentos: { include: { estornos: true } } } } },
+      });
+      const reservado = planosAbertos.reduce((total: number, plano: any) =>
+        total + plano.parcelas.reduce((s: number, parcela: any) => {
+          const recebido = parcela.pagamentos.reduce((pago: number, pagamento: any) =>
+            pago + Number(pagamento.valor) - pagamento.estornos.reduce((est: number, e: any) => est + Number(e.valor), 0), 0);
+          return s + Math.max(0, Number(parcela.valorPrevisto) - recebido);
+        }, 0), 0);
+      if (totalNovo > saldo - reservado + 0.009) {
         throw new Error("PAGAMENTO_SUPERIOR_AO_SALDO");
       }
 
@@ -11940,6 +12188,8 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
             valorTarifa: preparado.valorTarifa,
             valorLiquido: preparado.valorLiquido,
             observacao: preparado.observacao,
+            dataRecebimento: dataRecebimento.data,
+            registradoPorId: usuarioAtualId(),
           },
           include: {
             operadora: { select: { id: true, nome: true } },
@@ -11952,10 +12202,20 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
           preparado.contaFinanceiraId &&
           preparado.valorLiquido > 0.009
         ) {
+          const contaDoPagamento = contasPorId.get(preparado.contaFinanceiraId);
+          const sessaoDoPagamento = contaDoPagamento?.tipo === "CAIXA"
+            ? await tx.sessaoCaixa.findFirst({ where: {
+                organizacaoId, contaFinanceiraId: preparado.contaFinanceiraId,
+                abertoPorId: usuarioAtualId(), status: "ABERTA",
+              } }) : null;
+          if (contaDoPagamento?.tipo === "CAIXA" && !sessaoDoPagamento) {
+            throw new Error("PAGAMENTO_CAIXA_ABERTO_NECESSARIO");
+          }
           await tx.movimentacaoConta.create({
             data: {
               organizacaoId,
               contaFinanceiraId: preparado.contaFinanceiraId,
+              sessaoCaixaId: sessaoDoPagamento?.id || null,
               tipo: "ENTRADA",
               origem: "PAGAMENTO",
               valor: preparado.valorLiquido,
@@ -11964,7 +12224,7 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
                   ? ` • ${preparado.formaRecebimentoNome}`
                   : ""
               }`,
-              dataMovimentacao: pagamento.criadoEm,
+              dataMovimentacao: dataRecebimento.data,
               pagamentoId: pagamento.id,
             },
           });
@@ -11996,6 +12256,10 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
         status: 400,
         erro: "A soma dos pagamentos não pode ser maior que o saldo pendente da guia.",
       },
+      PAGAMENTO_PARCELAMENTO_MANUAL: {
+        status: 400,
+        erro: "Boleto e PIX parcelado exigem um plano com vencimentos e baixa manual de cada parcela.",
+      },
       PAGAMENTO_VALOR_INVALIDO: {
         status: 400,
         erro: "Informe valores de pagamento válidos.",
@@ -12019,6 +12283,18 @@ app.post("/guias/:id/pagamentos", async (req, res) => {
       PAGAMENTO_CONTA_OBRIGATORIA: {
         status: 400,
         erro: "Selecione a conta financeira que receberá esta parte do pagamento.",
+      },
+      PAGAMENTO_CAIXA_USUARIO_INVALIDO: {
+        status: 403, erro: "Recebimentos em dinheiro devem ser lançados no seu próprio caixa físico.",
+      },
+      PAGAMENTO_CAIXA_ABERTO_NECESSARIO: {
+        status: 409, erro: "Abra seu caixa individual antes de registrar recebimentos em dinheiro.",
+      },
+      PAGAMENTO_DINHEIRO_EXIGE_CAIXA: {
+        status: 400, erro: "Recebimentos em dinheiro exigem uma conta de caixa físico.",
+      },
+      PAGAMENTO_RETROATIVO_CAIXA: {
+        status: 400, erro: "O caixa físico só aceita recebimentos na data do caixa aberto. Para créditos anteriores use uma conta bancária/digital correspondente.",
       },
       PARCELAS_INVALIDAS: {
         status: 400,
@@ -12139,6 +12415,7 @@ app.post("/guias/:id/estornos", async (req, res) => {
     }
 
     const resultado = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
       const guia = await tx.guia.findUnique({
         where: { id: guiaId },
         include: {
@@ -12187,6 +12464,24 @@ app.post("/guias/:id/estornos", async (req, res) => {
         motivo,
         pagamentoId
       );
+
+      // Se uma parcela recebida for estornada, reabrir o saldo pendente.
+      if (pagamentoOrigem.parcelaReceberId) {
+        const registros = await tx.pagamento.findMany({
+          where: { parcelaReceberId: pagamentoOrigem.parcelaReceberId },
+          include: { estornos: { select: { valor: true } } },
+        });
+        const parcela = await tx.parcelaReceber.findUnique({
+          where: { id: pagamentoOrigem.parcelaReceberId },
+        });
+        if (parcela) {
+          const recebido = registros.reduce((t: number, p: any) =>
+            t + Number(p.valor) - p.estornos.reduce((e: number, item: any) => e + Number(item.valor), 0), 0);
+          const status = recebido >= Number(parcela.valorPrevisto) - 0.009
+            ? "RECEBIDA" : recebido > 0.009 ? "PARCIALMENTE_RECEBIDA" : "PENDENTE";
+          await tx.parcelaReceber.update({ where: { id: parcela.id }, data: { status } });
+        }
+      }
 
       const financeiro =
         await recalcularStatusFinanceiroGuia(
@@ -12247,6 +12542,49 @@ app.post("/guias/:id/estornos", async (req, res) => {
 });
 
 
+// V1.2.2: fotografia da clínica do estorno. Registros anteriores ao pacote
+// usam a primeira troca posterior (estado anterior da troca), quando disponível.
+type ClinicaHistoricaEstornoV122 = { id: number; nome: string; documento: string | null };
+type EventoClinicaV122 = { criadoEm: Date; dadosAnteriores: unknown; dadosNovos: unknown };
+function lerClinicaHistoricaV122(dados: unknown) {
+  if (!dados || typeof dados !== "object" || Array.isArray(dados)) return null;
+  const d = dados as Record<string, unknown>;
+  if (typeof d.clinicaId !== "number" || !Number.isInteger(d.clinicaId) ||
+      typeof d.clinicaNome !== "string" || !d.clinicaNome.trim()) return null;
+  return { id: d.clinicaId, nome: d.clinicaNome,
+    documento: typeof d.documentoClinica === "string" ? d.documentoClinica : null,
+    temDocumentoHistorico: Object.prototype.hasOwnProperty.call(d, "documentoClinica") };
+}
+async function clinicaHistoricaEstornoV122(
+  estorno: { id: number; criadoEm: Date; organizacaoId: number | null },
+  guia: { id: number; organizacaoId: number | null; clinica: ClinicaHistoricaEstornoV122 },
+  trocas: EventoClinicaV122[], fotografias: Map<number, unknown>,
+): Promise<ClinicaHistoricaEstornoV122> {
+  const foto = lerClinicaHistoricaV122(fotografias.get(estorno.id));
+  if (foto) return { id: foto.id, nome: foto.nome, documento: foto.documento };
+  const trocaPosterior = trocas.find((troca) => troca.criadoEm.getTime() > estorno.criadoEm.getTime());
+  const anterior = lerClinicaHistoricaV122(trocaPosterior?.dadosAnteriores);
+  if (!anterior) return guia.clinica;
+  // Auditorias legadas preservavam nome e ID, mas não o documento fiscal.
+  // Recuperar o documento cadastrado da clínica histórica, sem inventar valores.
+  const cadastro = anterior.temDocumentoHistorico ? null : await prisma.clinica.findUnique({
+    where: { id: anterior.id }, select: { documento: true },
+  });
+  return { id: anterior.id, nome: anterior.nome,
+    documento: anterior.temDocumentoHistorico ? anterior.documento : cadastro?.documento ?? null };
+}
+async function carregarHistoricoClinicasV122(guiasIds: number[], estornosIds: number[], organizacaoId: number) {
+  const [trocas, fotos] = await Promise.all([
+    prisma.auditoriaFinanceira.findMany({ where: { organizacaoId, entidade: "GUIA", acao: "TROCA_CLINICA", registroId: { in: guiasIds } },
+      orderBy: [{ criadoEm: "asc" }, { id: "asc" }] }),
+    prisma.auditoriaFinanceira.findMany({ where: { organizacaoId, entidade: "ESTORNO", acao: "EMISSAO_ESTORNO", registroId: { in: estornosIds } },
+      orderBy: [{ criadoEm: "desc" }, { id: "desc" }] }),
+  ]);
+  const fotografias = new Map<number, unknown>();
+  for (const foto of fotos) if (!fotografias.has(foto.registroId)) fotografias.set(foto.registroId, foto.dadosNovos);
+  return { trocas, fotografias };
+}
+
 app.get("/estornos/:codigo", async (req, res) => {
   try {
     const codigo = String(req.params.codigo || "").trim();
@@ -12299,7 +12637,11 @@ app.get("/estornos/:codigo", async (req, res) => {
       });
     }
 
-    return res.json(estorno);
+    const organizacaoId = estorno.organizacaoId ?? estorno.guia.organizacaoId ?? organizacaoAtualId();
+    if (organizacaoId !== organizacaoAtualId()) return res.status(404).json({ erro: "Estorno não encontrado." });
+    const { trocas, fotografias } = await carregarHistoricoClinicasV122([estorno.guiaId], [estorno.id], organizacaoId);
+    const clinicaHistorica = await clinicaHistoricaEstornoV122(estorno, estorno.guia, trocas, fotografias);
+    return res.json({ ...estorno, clinicaHistorica });
   } catch (erro) {
     console.error("Erro ao carregar estorno:", erro);
 
@@ -12374,6 +12716,13 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
       });
     }
 
+    const organizacaoId = atendimento.organizacaoId ?? organizacaoAtualId();
+    if (organizacaoId !== organizacaoAtualId()) return res.status(404).json({ erro: "Atendimento não encontrado." });
+    const { trocas, fotografias } = await carregarHistoricoClinicasV122(
+      atendimento.guias.map((guia) => guia.id),
+      atendimento.guias.flatMap((guia) => guia.estornos.map((estorno) => estorno.id)),
+      organizacaoId,
+    );
     const recibos = atendimento.guias.flatMap((guia) =>
       guia.recibos.map((recibo) => ({
         id: recibo.id,
@@ -12384,7 +12733,7 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
         emitidoEm: recibo.emitidoEm,
         guiaId: guia.id,
         codigoVoucher: guia.codigoPublico,
-        clinica: guia.clinica.nome,
+        clinica: recibo.nomeClinica,
         pagamentos: recibo.pagamentos.map((vinculo) => ({
           id: vinculo.pagamento.id,
           valor: vinculo.pagamento.valor,
@@ -12405,8 +12754,10 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
       }))
     );
 
-    const estornos = atendimento.guias.flatMap((guia) =>
-      guia.estornos.map((estorno) => {
+    const estornos = await Promise.all(atendimento.guias.flatMap((guia) =>
+      guia.estornos.map(async (estorno) => {
+        const clinicaHistorica = await clinicaHistoricaEstornoV122(estorno, guia,
+          trocas.filter((troca) => troca.registroId === guia.id), fotografias);
         const reciboRelacionado =
           estorno.pagamento?.recibos?.[0]?.recibo || null;
 
@@ -12419,7 +12770,7 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
           criadoEm: estorno.criadoEm,
           guiaId: guia.id,
           codigoVoucher: guia.codigoPublico,
-          clinica: guia.clinica.nome,
+          clinica: clinicaHistorica.nome,
           reciboRelacionado: reciboRelacionado
             ? {
                 codigoPublico:
@@ -12437,7 +12788,7 @@ app.get("/atendimentos/:id/documentos-financeiros", async (req, res) => {
             : null,
         };
       })
-    );
+    ));
 
     return res.json({
       atendimento: {
@@ -12765,6 +13116,7 @@ function dentroDoPeriodoFinanceiro(data: Date | null | undefined, inicio: Date, 
 function rotuloFormaPagamentoFinanceiro(forma: string) {
   const rotulos: Record<string, string> = {
     PIX: "Pix",
+    PIX_PARCELADO: "PIX parcelado",
     DINHEIRO: "Dinheiro",
     CARTAO_CREDITO: "Cartão de crédito",
     CARTAO_DEBITO: "Cartão de débito",
@@ -12895,7 +13247,7 @@ app.get("/financeiro/resumo", async (req, res) => {
       const paciente = guia.atendimento.paciente;
 
       for (const pagamento of guia.pagamentos) {
-        if (!dentroDoPeriodoFinanceiro(pagamento.criadoEm, inicio, fim)) continue;
+        if (!dentroDoPeriodoFinanceiro(pagamento.dataRecebimento || pagamento.criadoEm, inicio, fim)) continue;
         const valor = Number(pagamento.valor);
         const valorTarifa = Number(pagamento.valorTarifa || 0);
         const valorLiquido =
@@ -12907,7 +13259,7 @@ app.get("/financeiro/resumo", async (req, res) => {
         movimentacoes.push({
           id: `PAG-${pagamento.id}`,
           tipo: "RECEBIMENTO",
-          data: pagamento.criadoEm,
+          data: pagamento.dataRecebimento || pagamento.criadoEm,
           valor,
           forma: pagamento.forma,
           formaLabel: rotuloFormaPagamentoFinanceiro(pagamento.forma),
@@ -13040,7 +13392,8 @@ app.get("/financeiro/resumo", async (req, res) => {
         .filter((item) => item.contaFinanceiraId === contaId && item.tipo === tipo)
         .reduce((total, item) => total + Number(item._sum?.valor || 0), 0);
 
-    const contas = contasFinanceiras.map((conta) => {
+    const contas = contasFinanceiras.filter((conta) => podeVerSaldoBancario(req) ||
+      (conta.tipo === "CAIXA" && conta.responsavelCaixaId === usuarioAtualId())).map((conta) => {
       const entradas = valorAgrupado(totaisContas, conta.id, "ENTRADA");
       const saidas = valorAgrupado(totaisContas, conta.id, "SAIDA");
       const entradasPeriodo = valorAgrupado(
@@ -13349,7 +13702,7 @@ app.get("/financeiro/repasses", async (req, res) => {
           AND: [
             { OR: [{ organizacaoId }, { organizacaoId: null }] },
             { status: { not: "CANCELADA" } },
-            { OR: [{ confirmadaEm: { not: null } }, { realizadaEm: { not: null } }] },
+            { itens: { some: { status: "REALIZADO" } } },
           ],
         },
         include: {
@@ -13360,10 +13713,16 @@ app.get("/financeiro/repasses", async (req, res) => {
             },
           },
           itens: {
-            select: { id: true, status: true, valorRepasse: true },
+            select: {
+              id: true, status: true, valorRepasse: true, realizadaEm: true, confirmadaEm: true,
+              procedimento: { select: { nome: true } },
+            },
           },
           repasses: {
-            include: { repasse: { select: { id: true, status: true, codigoPublico: true } } },
+            include: {
+              repasse: { select: { id: true, status: true, codigoPublico: true } },
+              procedimentos: { select: { itemGuiaId: true } },
+            },
           },
         },
         orderBy: [{ confirmadaEm: "desc" }, { realizadaEm: "desc" }, { criadoEm: "desc" }],
@@ -13393,6 +13752,9 @@ app.get("/financeiro/repasses", async (req, res) => {
           },
           itens: {
             include: {
+              procedimentos: {
+                include: { itemGuia: { include: { procedimento: { select: { nome: true } } } } },
+              },
               guia: {
                 include: {
                   atendimento: {
@@ -13420,28 +13782,28 @@ app.get("/financeiro/repasses", async (req, res) => {
       }),
     ]);
 
+    // Repasses legados sem vínculo por procedimento cobrem a guia inteira.
+    // Para novos repasses, somente procedimentos REALIZADOS e ainda não
+    // vinculados a solicitações ativas/pagas ficam disponíveis.
     const disponiveis = guiasConfirmadas.flatMap((guia) => {
-      const possuiRepasseAtivo = guia.repasses.some(
-        (item) => item.repasse.status !== "RECUSADO"
-      );
-      if (possuiRepasseAtivo) return [];
-
-      const valorRepasse = guia.itens
-        .filter((item) => item.status !== "CANCELADO")
-        .reduce((total, item) => total + Number(item.valorRepasse), 0);
-
-      if (valorRepasse <= 0.009) return [];
-
-      return [{
-        guiaId: guia.id,
-        codigoVoucher: guia.codigoPublico,
-        pacienteId: guia.atendimento.paciente.id,
-        paciente: guia.atendimento.paciente.nome,
-        clinicaId: guia.clinica.id,
-        clinica: guia.clinica.nome,
-        confirmadoEm: guia.confirmadaEm || guia.realizadaEm || guia.criadoEm,
-        valorRepasse,
-      }];
+      const ativos = guia.repasses.filter((item) => item.repasse.status !== "RECUSADO");
+      if (ativos.some((item) => item.procedimentos.length === 0)) return [];
+      const jaVinculados = new Set(ativos.flatMap((item) => item.procedimentos.map((p) => p.itemGuiaId)));
+      return guia.itens
+        .filter((item) => item.status === "REALIZADO" && !jaVinculados.has(item.id) && Number(item.valorRepasse) > 0.009)
+        .map((item) => ({
+          guiaId: guia.id,
+          itemGuiaId: item.id,
+          procedimento: item.procedimento.nome,
+          codigoVoucher: guia.codigoPublico,
+          pacienteId: guia.atendimento.paciente.id,
+          paciente: guia.atendimento.paciente.nome,
+          clinicaId: guia.clinica.id,
+          clinica: guia.clinica.nome,
+          confirmadoEm: item.confirmadaEm || guia.confirmadaEm || item.realizadaEm || guia.criadoEm,
+          realizadaEm: item.realizadaEm || guia.realizadaEm,
+          valorRepasse: Number(item.valorRepasse),
+        }));
     });
 
     const lista = repasses.map((repasse) => ({
@@ -13492,7 +13854,14 @@ app.get("/financeiro/repasses", async (req, res) => {
         codigoAtendimento: item.guia.atendimento.codigoPublico,
         paciente: item.guia.atendimento.paciente.nome,
         valor: Number(item.valor),
-        confirmadoEm: item.guia.confirmadaEm || item.guia.realizadaEm || item.guia.criadoEm,
+        confirmadoEm: item.procedimentos[0]?.itemGuia.confirmadaEm || item.guia.confirmadaEm || item.guia.realizadaEm || item.guia.criadoEm,
+        procedimentos: item.procedimentos.map((p) => ({
+          itemGuiaId: p.itemGuiaId,
+          nome: p.itemGuia.procedimento.nome,
+          valor: Number(p.valor),
+          realizadaEm: p.itemGuia.realizadaEm || item.guia.realizadaEm,
+        })),
+        legado: item.procedimentos.length === 0,
       })),
     }));
 
@@ -13508,7 +13877,10 @@ app.get("/financeiro/repasses", async (req, res) => {
 
     return res.json({
       clinicas,
-      contasFinanceiras: contasFinanceiras.map(serializarContaFinanceira),
+      contasFinanceiras: contasFinanceiras
+        .filter((conta) => podeVerSaldoBancario(req) ||
+          (conta.tipo === "CAIXA" && conta.responsavelCaixaId === usuarioAtualId()))
+        .map((conta) => serializarContaFinanceira(conta, podeVerSaldoBancario(req))),
       contasPadraoRepasse: padroesRepasse.map((item: any) => ({
         forma: item.forma,
         contaFinanceiraId: item.contaFinanceiraId,
@@ -13537,6 +13909,87 @@ app.get("/financeiro/repasses", async (req, res) => {
   } catch (erro) {
     console.error("Erro ao carregar repasses:", erro);
     return res.status(500).json({ erro: "Não foi possível carregar o controle de repasses." });
+  }
+});
+
+// V1.2.1: demonstrativo de uma única solicitação, uma linha por guia.
+// Os valores recebidos representam a GUIA INTEIRA e não apenas o exame do repasse.
+app.get("/financeiro/repasses/:id/impressao", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ erro: "Repasse inválido." });
+    const organizacaoId = organizacaoAtualId();
+    const repasse = await prisma.repasse.findFirst({
+      where: { id, OR: [{ organizacaoId }, { organizacaoId: null }] },
+      include: {
+        clinica: { select: { nome: true } },
+        solicitadoPor: { select: { nome: true } },
+        itens: { include: {
+          procedimentos: { include: { itemGuia: { include: { procedimento: { select: { nome: true } } } } } },
+          guia: { include: {
+            atendimento: { include: { paciente: { select: { nome: true, cpf: true } } } },
+            pagamentos: { select: { valor: true } },
+            estornos: { select: { valor: true } },
+          } },
+        } },
+      },
+    });
+    if (!repasse) return res.status(404).json({ erro: "Repasse não encontrado." });
+    const agrupadas = new Map<number, {
+      guiaId: number; voucher: string; paciente: string; cpf: string | null;
+      procedimentos: string[]; valorGuia: number; valorRecebidoGuia: number;
+      valorRepasse: number;
+    }>();
+    for (const item of repasse.itens) {
+      const guia = item.guia;
+      const atual = agrupadas.get(guia.id) || {
+        guiaId: guia.id,
+        voucher: guia.codigoPublico || `Guia #${guia.id}`,
+        paciente: guia.atendimento.paciente.nome,
+        cpf: guia.atendimento.paciente.cpf,
+        procedimentos: [],
+        valorGuia: Number(guia.valorFinal),
+        valorRecebidoGuia: Math.max(0,
+          guia.pagamentos.reduce((s, pg) => s + Number(pg.valor), 0) -
+          guia.estornos.reduce((s, est) => s + Number(est.valor), 0)),
+        valorRepasse: 0,
+      };
+      atual.valorRepasse += Number(item.valor);
+      if (item.procedimentos.length) {
+        for (const proc of item.procedimentos) atual.procedimentos.push(proc.itemGuia.procedimento.nome);
+      } else {
+        atual.procedimentos.push("Guia completa (repasse histórico)");
+      }
+      agrupadas.set(guia.id, atual);
+    }
+    const linhas = Array.from(agrupadas.values()).map((linha) => ({
+      ...linha, procedimentos: Array.from(new Set(linha.procedimentos)),
+    }));
+    const soma = (campo: "valorGuia" | "valorRecebidoGuia" | "valorRepasse") =>
+      Math.round(linhas.reduce((total, linha) => total + linha[campo], 0) * 100) / 100;
+    const mostrarRecebimentos = podeVerSaldoBancario(req);
+    return res.json({
+      codigoPublico: repasse.codigoPublico || `REP-${repasse.id}`,
+      clinica: repasse.clinica.nome,
+      status: rotuloStatusRepasse(repasse.status),
+      solicitadoEm: repasse.solicitadoEm,
+      solicitadoPor: repasse.solicitadoPor?.nome || null,
+      dataPagamentoSolicitada: repasse.dataPagamentoSolicitada,
+      observacoes: repasse.observacoes,
+      linhas: linhas.map((linha) => ({
+        ...linha,
+        valorRecebidoGuia: mostrarRecebimentos ? linha.valorRecebidoGuia : null,
+      })),
+      totais: {
+        quantidadeGuias: linhas.length,
+        valorGuias: soma("valorGuia"),
+        valorRecebido: mostrarRecebimentos ? soma("valorRecebidoGuia") : null,
+        valorRepasse: soma("valorRepasse"),
+      },
+    });
+  } catch (erro) {
+    console.error("Erro ao consultar demonstrativo de repasse:", erro);
+    return res.status(500).json({ erro: "Não foi possível preparar o demonstrativo de repasse." });
   }
 });
 
@@ -13708,116 +14161,119 @@ app.get("/financeiro/repasses/:id/documentos/:documentoId", async (req, res) => 
 
 app.post("/financeiro/repasses", async (req, res) => {
   try {
-    const guiaIds: number[] = Array.isArray(req.body?.guiaIds)
-      ? Array.from(
-          new Set<number>(
-            req.body.guiaIds
-              .map((id: unknown) => Number(id))
-              .filter((id: number) => Number.isInteger(id) && id > 0)
-          )
-        )
-      : [];
-
-    if (guiaIds.length === 0 || guiaIds.length > 100) {
-      return res.status(400).json({ erro: "Selecione entre 1 e 100 guias para o repasse." });
+    const idsRecebidos = req.body?.itemGuiaIds;
+    const guiaIdsLegado = req.body?.guiaIds;
+    const selecaoIndividual = idsRecebidos !== undefined;
+    const lista = selecaoIndividual ? idsRecebidos : guiaIdsLegado;
+    if (!Array.isArray(lista) || !lista.length || lista.length > 100) {
+      return res.status(400).json({ erro: "Selecione entre 1 e 100 procedimentos realizados." });
     }
-
+    const ids: number[] = Array.from(new Set<number>(lista.map(Number)));
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+      return res.status(400).json({ erro: "Identificadores de procedimentos inválidos." });
+    }
     const dataPagamento = dataRepasseRecebida(req.body?.dataPagamentoSolicitada);
-    if (!dataPagamento) {
-      return res.status(400).json({ erro: "Informe uma data válida para o pagamento solicitado." });
-    }
-
+    if (!dataPagamento) return res.status(400).json({ erro: "Informe uma data válida para o pagamento solicitado." });
     const hoje = dataIsoSaoPaulo();
     const minimo = adicionarDiasIso(hoje, 1);
     const maximo = adicionarDiasIso(hoje, 7);
     if (dataPagamento.texto < minimo || dataPagamento.texto > maximo) {
-      return res.status(400).json({
-        erro: `A data solicitada deve ficar entre ${minimo.split("-").reverse().join("/")} e ${maximo.split("-").reverse().join("/")}.`,
-      });
+      return res.status(400).json({ erro: `A data solicitada deve ficar entre ${minimo} e ${maximo}.` });
     }
-
     const organizacaoId = organizacaoAtualId();
-    const guias = await prisma.guia.findMany({
-      where: {
-        id: { in: guiaIds },
-        OR: [{ organizacaoId }, { organizacaoId: null }],
-      },
-      include: {
-        clinica: { select: { id: true, nome: true } },
-        itens: { select: { status: true, valorRepasse: true } },
-        repasses: { include: { repasse: { select: { id: true, status: true } } } },
-      },
-    });
-
-    if (guias.length !== guiaIds.length) {
-      return res.status(404).json({ erro: "Uma ou mais guias selecionadas não foram encontradas." });
-    }
-
-    const clinicaId = guias[0].clinicaId;
-    if (guias.some((guia) => guia.clinicaId !== clinicaId)) {
-      return res.status(400).json({ erro: "Um repasse só pode conter guias da mesma clínica." });
-    }
-
-    const itensRepasse: Array<{ guiaId: number; valor: number }> = [];
-    for (const guia of guias) {
-      if (!guia.confirmadaEm && !guia.realizadaEm) {
-        return res.status(409).json({ erro: `A guia ${guia.codigoPublico || guia.id} ainda não foi confirmada pela clínica.` });
-      }
-      if (guia.status === "CANCELADA") {
-        return res.status(409).json({ erro: `A guia ${guia.codigoPublico || guia.id} está cancelada.` });
-      }
-      if (guia.repasses.some((item) => item.repasse.status !== "RECUSADO")) {
-        return res.status(409).json({ erro: `A guia ${guia.codigoPublico || guia.id} já pertence a um repasse em andamento ou pago.` });
-      }
-
-      const valor = guia.itens
-        .filter((item) => item.status !== "CANCELADO")
-        .reduce((total, item) => total + Number(item.valorRepasse), 0);
-      if (valor <= 0.009) {
-        return res.status(409).json({ erro: `A guia ${guia.codigoPublico || guia.id} não possui valor de repasse disponível.` });
-      }
-      itensRepasse.push({ guiaId: guia.id, valor });
-    }
-
-    const valorTotal = itensRepasse.reduce((total, item) => total + item.valor, 0);
     const codigoPublico = await gerarCodigoPublicoRepasse();
     const observacoes = String(req.body?.observacoes || "").trim().slice(0, 2000) || null;
-    const agora = new Date();
 
-    const criado = await prisma.repasse.create({
-      data: {
-        codigoPublico,
-        organizacaoId,
-        clinicaId,
-        status: "EM_ANALISE",
-        origem: "INTERNO",
-        valorTotal,
-        dataPagamentoSolicitada: dataPagamento.data,
-        solicitadoPorId: usuarioAtualId(),
-        emAnaliseEm: agora,
-        observacoes,
-        itens: {
-          create: itensRepasse.map((item) => ({
-            guiaId: item.guiaId,
-            valor: item.valor,
-          })),
+    const criado = await prisma.$transaction(async (tx) => {
+      // Trava todas as guias em ordem determinística para não gerar repasses
+      // concorrentes para o mesmo procedimento.
+      const itensDaSelecao = selecaoIndividual
+        ? await tx.itemGuia.findMany({ where: { id: { in: ids } }, select: { id: true, guiaId: true } })
+        : await tx.itemGuia.findMany({ where: { guiaId: { in: ids } }, select: { id: true, guiaId: true, status: true } });
+      if (selecaoInvalida(itensDaSelecao, ids, selecaoIndividual)) throw new Error("ITENS_INVALIDOS");
+      const guiasIds = Array.from(new Set(itensDaSelecao.map((item) => item.guiaId))).sort((a, b) => a - b);
+      for (const guiaId of guiasIds) {
+        await tx.$queryRaw`SELECT "id" FROM "Guia" WHERE "id" = ${guiaId} FOR UPDATE`;
+      }
+      const itens = await tx.itemGuia.findMany({
+        where: { id: { in: selecaoIndividual ? ids : itensDaSelecao.map((i) => i.id) } },
+        include: {
+          guia: {
+            include: {
+              repasses: {
+                include: {
+                  repasse: { select: { status: true } },
+                  procedimentos: { select: { itemGuiaId: true } },
+                },
+              },
+            },
+          },
         },
-      },
-      include: { clinica: { select: { nome: true } } },
+      });
+      if (!itens.length) throw new Error("ITENS_INVALIDOS");
+      const clinicaId = itens[0].guia.clinicaId;
+      if (itens.some((item) => item.guia.clinicaId !== clinicaId)) throw new Error("CLINICAS_DIFERENTES");
+      if (itens.some((item) => ![organizacaoId, null].includes(item.guia.organizacaoId))) throw new Error("ITENS_INVALIDOS");
+      if (itens.some((item) => item.guia.status === "CANCELADA" || item.status !== "REALIZADO")) throw new Error("NAO_REALIZADO");
+      if (itens.some((item) => item.guia.repasses.some((repasse) =>
+        repasse.repasse.status !== "RECUSADO" &&
+        (repasse.procedimentos.length === 0 || repasse.procedimentos.some((p) => p.itemGuiaId === item.id))
+      ))) throw new Error("JA_REPASSADO");
+      const grupo = new Map<number, typeof itens>();
+      for (const item of itens) {
+        const v = Number(item.valorRepasse);
+        if (v <= 0.009) throw new Error("SEM_VALOR");
+        const grupoAtual = grupo.get(item.guiaId) || [];
+        grupoAtual.push(item);
+        grupo.set(item.guiaId, grupoAtual);
+      }
+      const valorTotal = itens.reduce((s, i) => s + Number(i.valorRepasse), 0);
+      return tx.repasse.create({
+        data: {
+          codigoPublico, organizacaoId, clinicaId, status: "EM_ANALISE", origem: "INTERNO",
+          valorTotal, dataPagamentoSolicitada: dataPagamento.data,
+          solicitadoPorId: usuarioAtualId(), emAnaliseEm: new Date(), observacoes,
+          itens: {
+            create: Array.from(grupo.entries()).map(([guiaId, selecionados]) => ({
+              guiaId,
+              valor: selecionados.reduce((s, i) => s + Number(i.valorRepasse), 0),
+              procedimentos: {
+                create: selecionados.map((i) => ({ itemGuiaId: i.id, valor: Number(i.valorRepasse) })),
+              },
+            })),
+          },
+        },
+      });
     });
-
     return res.status(201).json({
-      id: criado.id,
-      codigoPublico: criado.codigoPublico,
-      status: criado.status,
-      clinica: criado.clinica.nome,
-      valorTotal: Number(criado.valorTotal),
+      id: criado.id, codigoPublico: criado.codigoPublico,
+      status: criado.status, valorTotal: Number(criado.valorTotal),
     });
   } catch (erro) {
-    console.error("Erro ao criar repasse:", erro);
+    const mensagens: Record<string, string> = {
+      ITENS_INVALIDOS: "A seleção contém guias ou procedimentos inválidos.",
+      CLINICAS_DIFERENTES: "Uma solicitação só pode conter procedimentos da mesma clínica.",
+      NAO_REALIZADO: "Só é possível solicitar repasse de procedimentos realizados, não cancelados.",
+      JA_REPASSADO: "Um procedimento já pertence a um repasse ativo ou pago.",
+      SEM_VALOR: "Um procedimento não possui valor de repasse disponível.",
+    };
+    const chave = erro instanceof Error ? erro.message : "";
+    if (mensagens[chave]) return res.status(409).json({ erro: mensagens[chave] });
+    console.error("Erro ao criar repasse por procedimento:", erro);
     return res.status(500).json({ erro: "Não foi possível criar a solicitação de repasse." });
   }
 });
+
+// Compatibilidade segura: guiaIds só serve para guias integralmente realizadas.
+function selecaoInvalida(
+  itens: Array<{ id: number; guiaId: number; status?: string }>,
+  ids: number[],
+  selecaoIndividual: boolean
+) {
+  if (selecaoIndividual) return itens.length !== ids.length;
+  return new Set(itens.map((i) => i.guiaId)).size !== ids.length ||
+    itens.some((i) => i.status !== "REALIZADO");
+}
 
 app.patch("/financeiro/repasses/:id/status", async (req, res) => {
   try {
@@ -13932,7 +14388,7 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
       const [contasAtivas, padrao] = await Promise.all([
         prisma.contaFinanceira.findMany({
           where: { organizacaoId, ativo: true },
-          select: { id: true, nome: true },
+          select: { id: true, nome: true, tipo: true, responsavelCaixaId: true },
         }),
         prisma.contaPadraoRepasse.findUnique({
           where: {
@@ -13970,10 +14426,52 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
         });
       }
 
+      if (formaPagamento === "DINHEIRO" && (!contaSelecionada || contaSelecionada.tipo !== "CAIXA")) {
+        return res.status(400).json({ erro: "Repasse em dinheiro exige uma conta do tipo Caixa físico." });
+      }
+      if (formaPagamento !== "DINHEIRO" && contaSelecionada?.tipo === "CAIXA") {
+        return res.status(400).json({ erro: "Repasses bancários não podem sair do caixa físico." });
+      }
+      if (contaSelecionada?.tipo !== "CAIXA" && contaSelecionada && !podeVerSaldoBancario(req)) {
+        return res.status(403).json({ erro: "Você não tem permissão para movimentar contas bancárias." });
+      }
+      if (formaPagamento === "DINHEIRO" && contaSelecionada?.responsavelCaixaId !== usuarioId) {
+        return res.status(403).json({ erro: "Repasse em dinheiro só pode sair do caixa individual do funcionário conectado." });
+      }
+      if (formaPagamento === "DINHEIRO" && dataPagamento.texto !== dataIsoSaoPaulo()) {
+        return res.status(400).json({ erro: "O repasse em dinheiro precisa ser lançado na data do caixa aberto." });
+      }
+
       const arquivos = arquivosRecebidosRepasse(req);
       const agora = new Date();
 
       await prisma.$transaction(async (tx) => {
+        // Impede reatribuir lançamentos antigos, principalmente de caixas fechados.
+        const movimentoAnterior = await tx.movimentacaoConta.findUnique({ where: { repasseId: id } });
+        if (movimentoAnterior && repasse.status === "PAGO") {
+          throw new Error("REPASSE_JA_PAGO_IMUTAVEL");
+        }
+        const sessaoCaixa = formaPagamento === "DINHEIRO"
+          ? await tx.sessaoCaixa.findFirst({ where: {
+              organizacaoId, contaFinanceiraId: contaFinanceiraId!, abertoPorId: usuarioId, status: "ABERTA",
+            } }) : null;
+        if (formaPagamento === "DINHEIRO" && (
+          !sessaoCaixa || sessaoCaixa.dataMovimento.toISOString().slice(0, 10) !== dataPagamento.texto
+        )) {
+          throw new Error("CAIXA_ABERTO_NECESSARIO");
+        }
+        if (sessaoCaixa && contaFinanceiraId) {
+          const contaCaixa = await tx.contaFinanceira.findUnique({ where: { id: contaFinanceiraId } });
+          const gruposCaixa = await tx.movimentacaoConta.groupBy({
+            by: ["tipo"], where: { organizacaoId, contaFinanceiraId }, _sum: { valor: true },
+          });
+          const saldoCentavos = Math.round(Number(contaCaixa?.saldoInicial || 0) * 100) + gruposCaixa.reduce(
+            (total, grupo) => total + (grupo.tipo === "ENTRADA" ? 1 : -1) * Math.round(Number(grupo._sum.valor || 0) * 100), 0,
+          );
+          if (saldoCentavos < Math.round(Number(repasse.valorTotal) * 100)) {
+            throw new Error("CAIXA_SALDO_INSUFICIENTE");
+          }
+        }
         const dadosAtualizacao: any = {
           dataPagamentoEfetivo: dataPagamento.data,
           formaPagamento: formaPagamento as any,
@@ -14008,13 +14506,14 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
               valor: Number(repasse.valorTotal),
               descricao: `Repasse ${repasse.codigoPublico || `#${repasse.id}`}`,
               dataMovimentacao: dataPagamento.data,
-              repasseId: id,
+              repasseId: id, sessaoCaixaId: sessaoCaixa?.id || null,
             },
             update: {
               contaFinanceiraId,
               valor: Number(repasse.valorTotal),
               descricao: `Repasse ${repasse.codigoPublico || `#${repasse.id}`}`,
               dataMovimentacao: dataPagamento.data,
+              sessaoCaixaId: sessaoCaixa?.id || null,
             },
           });
         }
@@ -14047,6 +14546,15 @@ app.post("/financeiro/repasses/:id/pagamento", (req, res) => {
           : "Pagamento do repasse registrado com sucesso.",
       });
     } catch (erroInterno) {
+      if (erroInterno instanceof Error && erroInterno.message === "CAIXA_ABERTO_NECESSARIO") {
+        return res.status(409).json({ erro: "É necessário abrir o caixa físico correto antes de registrar repasse em dinheiro." });
+      }
+      if (erroInterno instanceof Error && erroInterno.message === "CAIXA_SALDO_INSUFICIENTE") {
+        return res.status(409).json({ erro: "Saldo insuficiente no caixa físico para efetuar o repasse." });
+      }
+      if (erroInterno instanceof Error && erroInterno.message === "REPASSE_JA_PAGO_IMUTAVEL") {
+        return res.status(409).json({ erro: "Este repasse já foi pago. Correções exigem estorno controlado, para preservar o fechamento do caixa." });
+      }
       console.error("Erro ao registrar pagamento do repasse:", erroInterno);
       return res.status(500).json({ erro: "Não foi possível registrar o pagamento do repasse." });
     }
@@ -14350,6 +14858,7 @@ app.get("/relatorios/operacionais", async (req, res) => {
                   nome: true,
                   cpf: true,
                   telefone: true,
+                  dataNascimento: true,
                 },
               },
             },
@@ -14413,6 +14922,30 @@ app.get("/relatorios/operacionais", async (req, res) => {
       };
     });
 
+    // Indicador separado do status de cobrança: parcelamento integral não é recebimento.
+    const planosAutorizacaoOperacional = guiasBanco.length
+      ? await prisma.planoParcelamento.findMany({
+          where: {
+            organizacaoId,
+            ativo: true,
+            guiaId: { in: guiasBanco.map((guia) => guia.id) },
+          },
+          include: {
+            parcelas: {
+              include: {
+                pagamentos: { include: { estornos: { select: { valor: true } } } },
+              },
+            },
+          },
+        })
+      : [];
+    const planosAutorizacaoPorGuia = new Map<number, typeof planosAutorizacaoOperacional>();
+    for (const plano of planosAutorizacaoOperacional) {
+      const lista = planosAutorizacaoPorGuia.get(plano.guiaId) || [];
+      lista.push(plano);
+      planosAutorizacaoPorGuia.set(plano.guiaId, lista);
+    }
+
     let guias = guiasBanco.map((guia) => {
       const totalPago = guia.pagamentos.reduce((total, pagamento) => total + Number(pagamento.valor), 0);
       const totalEstornado = guia.estornos.reduce((total, estorno) => total + Number(estorno.valor), 0);
@@ -14428,6 +14961,14 @@ app.get("/relatorios/operacionais", async (req, res) => {
         codigoPublico: guia.codigoPublico,
         status: guia.status,
         realizacao,
+        // A guia pode estar autorizada por parcelamento e ainda aguardar recebimento.
+        autorizadoPorParcelamento:
+          saldo > 0.009 &&
+          guia.status !== "CANCELADA" &&
+          guia.status !== "ESTORNO_PENDENTE" &&
+          itensAtivos.length > 0 &&
+          cadastroMinimoParaVoucher(guia.atendimento.paciente).completo &&
+          temCoberturaParcelamentoV12(planosAutorizacaoPorGuia.get(guia.id) || [], saldo),
         criadoEm: guia.criadoEm,
         emitidaEm: guia.emitidaEm,
         validadeAte: guia.validadeAte,
@@ -14652,7 +15193,7 @@ app.get("/relatorios/financeiros", async (req, res) => {
       filtrosRepasse.push({ OR: opcoesBusca });
     }
 
-    const [guiasBanco, repassesBanco, clinicas] = await Promise.all([
+    const [guiasBanco, repassesBanco, clinicas, guiasPrevisaoBanco] = await Promise.all([
       prisma.guia.findMany({
         where: whereGuias,
         include: {
@@ -14698,6 +15239,18 @@ app.get("/relatorios/financeiros", async (req, res) => {
           },
           itens: {
             include: {
+              procedimentos: {
+                include: {
+                  itemGuia: {
+                    select: {
+                      id: true,
+                      realizadaEm: true,
+                      confirmadaEm: true,
+                      procedimento: { select: { nome: true } },
+                    },
+                  },
+                },
+              },
               guia: {
                 include: {
                   atendimento: {
@@ -14723,6 +15276,30 @@ app.get("/relatorios/financeiros", async (req, res) => {
         where: { ativo: true },
         select: { id: true, nome: true },
         orderBy: { nome: "asc" },
+      }),
+      // V1.2 - previsao por emissao/criacao de guia; nao e repasse solicitado nem pagamento.
+      prisma.guia.findMany({
+        where: { AND: [
+          escopoOrganizacao,
+          { criadoEm: { gte: inicio, lte: fim } },
+          { status: { not: "CANCELADA" } },
+          ...(clinicaId ? [{ clinicaId }] : []),
+        ] },
+        include: {
+          clinica: { select: { id: true, nome: true } },
+          atendimento: { select: { id: true, codigoPublico: true, paciente: {
+            select: { nome: true, cpf: true },
+          } } },
+          itens: { select: { id: true, status: true, valorRepasse: true } },
+          pagamentos: { select: { valor: true, valorTarifa: true,
+            estornos: { select: { valor: true } } } },
+          repasses: { select: {
+            valor: true,
+            repasse: { select: { id: true, status: true } },
+            procedimentos: { select: { itemGuiaId: true } },
+          } },
+        },
+        orderBy: { criadoEm: "desc" },
       }),
     ]);
 
@@ -14752,11 +15329,11 @@ app.get("/relatorios/financeiros", async (req, res) => {
       const paciente = guia.atendimento.paciente;
 
       for (const pagamento of guia.pagamentos) {
-        if (!dentroDoPeriodoFinanceiro(pagamento.criadoEm, inicio, fim)) continue;
+        if (!dentroDoPeriodoFinanceiro(pagamento.dataRecebimento || pagamento.criadoEm, inicio, fim)) continue;
         movimentacoes.push({
           id: `PAG-${pagamento.id}`,
           tipo: "RECEBIMENTO",
-          data: pagamento.criadoEm,
+          data: pagamento.dataRecebimento || pagamento.criadoEm,
           valor: Number(pagamento.valor),
           forma: pagamento.forma,
           formaLabel: rotuloFormaPagamentoFinanceiro(pagamento.forma),
@@ -14862,6 +15439,9 @@ app.get("/relatorios/financeiros", async (req, res) => {
       recusadoPor: repasse.recusadoPor?.nome || null,
       pagoPor: repasse.pagoPor?.nome || null,
       quantidadeGuias: repasse.itens.length,
+      quantidadeProcedimentos: repasse.itens.some((item) => item.procedimentos.length === 0)
+        ? null // repasse antigo da guia inteira: quantidade não individualizada
+        : repasse.itens.reduce((total, item) => total + item.procedimentos.length, 0),
       percentualDocumentacao:
         repasse.status === "PAGO"
           ? percentualDocumentacaoRepasse(repasse.documentos)
@@ -14889,8 +15469,14 @@ app.get("/relatorios/financeiros", async (req, res) => {
         cpf: item.guia.atendimento.paciente.cpf,
         telefone: item.guia.atendimento.paciente.telefone,
         valor: Number(item.valor),
-        confirmadoEm:
+        confirmadoEm: item.procedimentos[0]?.itemGuia.confirmadaEm ||
           item.guia.confirmadaEm || item.guia.realizadaEm || item.guia.criadoEm,
+        procedimentos: item.procedimentos.map((p) => ({
+          id: p.itemGuia.id,
+          nome: p.itemGuia.procedimento.nome,
+          realizadaEm: p.itemGuia.realizadaEm,
+          confirmadaEm: p.itemGuia.confirmadaEm,
+        })),
       })),
     }));
 
@@ -14905,6 +15491,110 @@ app.get("/relatorios/financeiros", async (req, res) => {
         movimentacoes.map((item) => [item.forma, item.formaLabel] as const)
       ).entries()
     ).map(([codigo, label]) => ({ codigo, label }));
+
+    // Quadro gerencial por guias emitidas no periodo. Valores da tabela de repasses
+    // sao fotografias contratuais dos itens da guia, NAO obrigacoes autorizadas.
+    const arredondarRelatorio = (valor: number) => arredondarCentavos(valor);
+    const termoPrevisao = busca.toLocaleLowerCase("pt-BR");
+    const cpfNumericoPrevisao = busca.replace(/\D/g, "");
+    const previsoes = guiasPrevisaoBanco.flatMap((guia) => {
+      const itensAtivos = guia.itens.filter((item) => item.status !== "CANCELADO");
+      if (itensAtivos.length === 0) return [];
+      const paciente = guia.atendimento.paciente;
+      if (termoPrevisao) {
+        const textoBusca = [guia.codigoPublico, guia.atendimento.codigoPublico,
+          paciente.nome, paciente.cpf, guia.clinica.nome].filter(Boolean)
+          .join(" ").toLocaleLowerCase("pt-BR");
+        if (!textoBusca.includes(termoPrevisao) &&
+          !(cpfNumericoPrevisao && (paciente.cpf || "").includes(cpfNumericoPrevisao))) return [];
+      }
+
+      const valorFinal = arredondarRelatorio(Number(guia.valorFinal));
+      const subtotal = arredondarRelatorio(Number(guia.subtotal));
+      const desconto = arredondarRelatorio(Number(guia.desconto));
+      const beneficio = arredondarRelatorio(Number(guia.beneficio));
+      const valorRepasse = arredondarRelatorio(itensAtivos.reduce(
+        (total, item) => total + Number(item.valorRepasse), 0));
+      const recebido = arredondarRelatorio(guia.pagamentos.reduce((total, pagamento) =>
+        total + Number(pagamento.valor) - pagamento.estornos.reduce(
+          (somatorio, estorno) => somatorio + Number(estorno.valor), 0), 0));
+      // Sao tarifas registradas nos recebimentos efetivos; futuras tarifas ainda nao existem.
+      const tarifasRegistradas = arredondarRelatorio(guia.pagamentos.reduce(
+        (total, pagamento) => total + Number(pagamento.valorTarifa || 0), 0));
+      const saldoReceber = arredondarRelatorio(Math.max(valorFinal - recebido, 0));
+      const vinculados = guia.repasses.filter((item) => item.repasse.status !== "RECUSADO");
+      const porSituacao = {
+        AGUARDANDO_CONFIRMACAO: 0, DISPONIVEL: 0, EM_REPASSE: 0, PAGO: 0,
+      };
+      for (const procedimento of itensAtivos) {
+        const valorItem = Number(procedimento.valorRepasse);
+        const repasseDoItem = vinculados.find((r) =>
+          r.procedimentos.length === 0 ||
+          r.procedimentos.some((p) => p.itemGuiaId === procedimento.id));
+        const situacao: keyof typeof porSituacao = repasseDoItem
+          ? repasseDoItem.repasse.status === "PAGO" ? "PAGO" : "EM_REPASSE"
+          : procedimento.status === "REALIZADO" ? "DISPONIVEL" : "AGUARDANDO_CONFIRMACAO";
+        porSituacao[situacao] += valorItem;
+      }
+      const situacoesAtivas = Object.entries(porSituacao).filter(([, valor]) => valor > 0.009);
+      const situacaoRepasse = situacoesAtivas.length > 1 ? "PARCIAL"
+        : situacoesAtivas.length === 1 ? situacoesAtivas[0][0] : "AGUARDANDO_CONFIRMACAO";
+      const valorRepasseRegistrado = arredondarRelatorio(vinculados.reduce(
+        (total, item) => total + Number(item.valor), 0));
+      const margemBruta = arredondarRelatorio(valorFinal - valorRepasse);
+      const margemEstimada = arredondarRelatorio(margemBruta - tarifasRegistradas);
+      return [{
+        guiaId: guia.id,
+        codigoVoucher: guia.codigoPublico,
+        atendimentoId: guia.atendimento.id,
+        codigoAtendimento: guia.atendimento.codigoPublico,
+        criadoEm: guia.criadoEm,
+        paciente: paciente.nome,
+        cpf: paciente.cpf,
+        clinicaId: guia.clinica.id,
+        clinica: guia.clinica.nome,
+        situacaoRepasse,
+        situacoesValores: porSituacao,
+        valorOriginal: subtotal,
+        desconto,
+        beneficio,
+        reducaoTotal: arredondarRelatorio(Math.max(subtotal - valorFinal, 0)),
+        valorFinal,
+        recebido,
+        saldoReceber,
+        valorRepasse,
+        valorRepasseRegistrado,
+        tarifasRegistradas,
+        margemBruta,
+        margemEstimada,
+        margemPercentual: valorFinal > 0 ? arredondarRelatorio(margemEstimada / valorFinal * 100) : 0,
+      }];
+    });
+
+    const somaPrevisao = (campo: "valorOriginal" | "desconto" | "beneficio" | "reducaoTotal" |
+      "valorFinal" | "recebido" | "saldoReceber" | "valorRepasse" | "tarifasRegistradas" |
+      "margemBruta" | "margemEstimada") =>
+      arredondarRelatorio(previsoes.reduce((total, item) => total + item[campo], 0));
+    const totalPorSituacao = (situacao: keyof (typeof previsoes)[number]["situacoesValores"]) =>
+      arredondarRelatorio(previsoes.reduce((total, item) => total + item.situacoesValores[situacao], 0));
+    const resumoPrevisoes = {
+      totalGuias: previsoes.length,
+      valorOriginal: somaPrevisao("valorOriginal"),
+      desconto: somaPrevisao("desconto"),
+      beneficio: somaPrevisao("beneficio"),
+      reducaoTotal: somaPrevisao("reducaoTotal"),
+      valorFinal: somaPrevisao("valorFinal"),
+      recebido: somaPrevisao("recebido"),
+      saldoReceber: somaPrevisao("saldoReceber"),
+      valorRepasse: somaPrevisao("valorRepasse"),
+      tarifasRegistradas: somaPrevisao("tarifasRegistradas"),
+      margemBruta: somaPrevisao("margemBruta"),
+      margemEstimada: somaPrevisao("margemEstimada"),
+      aConfirmar: totalPorSituacao("AGUARDANDO_CONFIRMACAO"),
+      disponivelSolicitacao: totalPorSituacao("DISPONIVEL"),
+      emRepasse: totalPorSituacao("EM_REPASSE"),
+      registradoPago: totalPorSituacao("PAGO"),
+    };
 
     return res.json({
       periodo: { inicio: inicioTexto, fim: fimTexto },
@@ -14922,6 +15612,7 @@ app.get("/relatorios/financeiros", async (req, res) => {
         formasPagamento,
       },
       resumo: {
+        previsoes: resumoPrevisoes,
         movimentacoes: {
           total: movimentacoesResumo.length,
           quantidadeRecebimentos: movimentacoesResumo.filter((item) => item.tipo === "RECEBIMENTO").length,
@@ -14944,6 +15635,7 @@ app.get("/relatorios/financeiros", async (req, res) => {
       },
       movimentacoes,
       repasses,
+      previsoes,
     });
   } catch (erro) {
     console.error("Erro ao carregar relatórios financeiros:", erro);
@@ -14991,10 +15683,13 @@ app.get("/relatorios/producao", async (req, res) => {
 
     const whereItens: any = {
       status: "REALIZADO",
+      AND: [{ OR: [
+        { realizadaEm: { gte: inicio, lte: fim } },
+        { realizadaEm: null, guia: { realizadaEm: { gte: inicio, lte: fim } } },
+      ] }],
       guia: {
         OR: [{ organizacaoId }, { organizacaoId: null }],
         status: { not: "CANCELADA" },
-        realizadaEm: { gte: inicio, lte: fim },
         ...(clinicaId ? { clinicaId } : {}),
       },
       ...(procedimentoId ? { procedimentoId } : {}),
@@ -15194,7 +15889,7 @@ app.get("/relatorios/producao", async (req, res) => {
         clinicaId: guia.clinica.id,
         clinica: guia.clinica.nome,
         unidade: guia.unidadeClinica?.nome || null,
-        realizadoEm: guia.realizadaEm || guia.confirmadaEm || guia.criadoEm,
+        realizadoEm: item.realizadaEm || guia.realizadaEm || guia.confirmadaEm || guia.criadoEm,
         procedimentoId: procedimento.id,
         procedimento: procedimento.nome,
         valorPaciente,

@@ -2,6 +2,7 @@
 
 import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { Eye, EyeOff } from "lucide-react";
 import { dignaBrandStyle } from "@/lib/dignaBrand";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333";
@@ -13,6 +14,7 @@ function LoginContent() {
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
+  const [mostrarSenha, setMostrarSenha] = useState(false);
   const [confirmacao, setConfirmacao] = useState("");
   const [lembrar, setLembrar] = useState(false);
   const [erro, setErro] = useState("");
@@ -151,17 +153,26 @@ function LoginContent() {
             />
           </label>
 
-          <label className="mt-4 block text-sm font-semibold text-xango-text">
-            Senha
-            <input
-              type="password"
-              value={senha}
-              onChange={(e) => setSenha(e.target.value)}
-              autoComplete={inicial ? "new-password" : "current-password"}
-              className="mt-2 w-full rounded-md border border-xango-border px-3 py-3 outline-none focus:border-xango-primary"
-              required
-            />
-          </label>
+          <div className="mt-4">
+            <label htmlFor="login-senha" className="block text-sm font-semibold text-xango-text">Senha</label>
+            <div className="relative mt-2">
+              <input
+                id="login-senha"
+                type={mostrarSenha ? "text" : "password"}
+                value={senha}
+                onChange={(e) => setSenha(e.target.value)}
+                autoComplete={inicial ? "new-password" : "current-password"}
+                className="w-full rounded-md border border-xango-border py-3 pl-3 pr-12 outline-none focus:border-xango-primary"
+                required
+              />
+              <button type="button" aria-label={mostrarSenha ? "Ocultar senha" : "Mostrar senha"}
+                aria-pressed={mostrarSenha} aria-controls="login-senha"
+                onClick={() => setMostrarSenha((atual) => !atual)}
+                className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-md text-xango-muted hover:text-xango-primary focus-visible:outline-2 focus-visible:outline-xango-primary">
+                {mostrarSenha ? <EyeOff size={19} aria-hidden="true" /> : <Eye size={19} aria-hidden="true" />}
+              </button>
+            </div>
+          </div>
 
           {inicial && (
             <label className="mt-4 block text-sm font-semibold text-xango-text">

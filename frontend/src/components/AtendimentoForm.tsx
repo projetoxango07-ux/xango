@@ -2,12 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import BuscaMaePaciente from "./BuscaMaePaciente";
+import ParcelamentosGuiaV12 from "./ParcelamentosGuiaV12";
+import TrocaClinicaGuiaV122 from "./TrocaClinicaGuiaV122";
 import {
   useRouter,
   useSearchParams,
 } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
+function hojeRecebimentoSP() {
+  const partes = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const valores = Object.fromEntries(partes.map((item) => [item.type, item.value]));
+  return `${valores.year}-${valores.month}-${valores.day}`;
+}
+
 
 
 const etapas = [
@@ -417,6 +425,17 @@ function normalizarBuscaProcedimento(valor: string) {
     .trim();
 }
 
+// Cadastro 100% e um indicador de preenchimento, nao requisito para o voucher.
+// A autorizacao final e verificada no backend.
+function cadastroMinimoVoucherCompleto(paciente: Paciente) {
+  return Boolean(
+    paciente.nome?.trim() &&
+    paciente.dataNascimento &&
+    paciente.cpf?.trim() &&
+    paciente.telefone?.trim()
+  );
+}
+
 export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -447,6 +466,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [guiasSalvas, setGuiasSalvas] = useState<Record<string, boolean>>({});
   const [guiasPagas, setGuiasPagas] = useState<Record<string, boolean>>({});
   const [guiaIds, setGuiaIds] = useState<Record<string, number>>({});
+  const [guiaOriginalPorProcedimento, setGuiaOriginalPorProcedimento] = useState<Record<number, number>>({});
   const [atendimentoPersistidoId, setAtendimentoPersistidoId] = useState<
     number | undefined
   >(atendimentoId);
@@ -525,8 +545,75 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [valorRecebido, setValorRecebido] = useState("");
   const [parcelasPagamento, setParcelasPagamento] = useState(1);
   const [pagamentosMistos, setPagamentosMistos] = useState<PartePagamentoMisto[]>([]);
+  const [dataRecebimentoPagamento, setDataRecebimentoPagamento] = useState(hojeRecebimentoSP);
+  const [modoParcelamentoManual, setModoParcelamentoManual] = useState(false);
+  const [guiasComVoucherParcelado, setGuiasComVoucherParcelado] = useState<Record<string, boolean>>({});
+  const [guiasComCoberturaParcelada, setGuiasComCoberturaParcelada] = useState<Record<string, boolean>>({});
+  const [guiasVoucherAutorizado, setGuiasVoucherAutorizado] = useState<Record<string, boolean>>({});
+  const [motivosBloqueioVoucher, setMotivosBloqueioVoucher] = useState<Record<string, string[]>>({});
+  const [revisaoVoucherV12, setRevisaoVoucherV12] = useState(0);
+  const [consultandoVoucherV122, setConsultandoVoucherV122] = useState(false);
+  function revalidarVoucherV122() {
+    // Nunca manter uma autorização anterior após uma operação financeira.
+    setGuiasVoucherAutorizado({});
+    setGuiasComVoucherParcelado({});
+    setGuiasComCoberturaParcelada({});
+    setMotivosBloqueioVoucher({});
+    setConsultandoVoucherV122(true);
+    setRevisaoVoucherV12((atual) => atual + 1);
+  }
   const [preferenciasFinanceiras, setPreferenciasFinanceiras] =
     useState<PreferenciasFinanceirasApi>(PREFERENCIAS_FINANCEIRAS_PADRAO);
+
+  // Revalida no servidor a liberação do voucher após reabrir o atendimento,
+  // baixar parcelas ou registrar um novo plano. A quitação não é presumida.
+  const idsVoucherV12 = Object.entries(guiaIds)
+    .map(([chave, id]) => ({ chave, id }))
+    .filter(({ id }) => Number.isInteger(id) && id > 0);
+  const assinaturaGuiasVoucherV12 = idsVoucherV12
+    .map(({ chave, id }) => `${chave}:${id}`)
+    .join("|");
+  useEffect(() => {
+    if (!assinaturaGuiasVoucherV12) {
+      setConsultandoVoucherV122(false);
+      return;
+    }
+    setConsultandoVoucherV122(true);
+    let cancelado = false;
+    const controller = new AbortController();
+    const pares = assinaturaGuiasVoucherV12.split("|").map((item) => {
+      const separador = item.lastIndexOf(":");
+      return { chave: item.slice(0, separador), id: Number(item.slice(separador + 1)) };
+    });
+    async function consultar() {
+      const resultados = await Promise.all(pares.map(async ({ chave, id }) => {
+        try {
+          const resposta = await fetch(`${API_URL}/guias/${id}`, {
+            cache: "no-store", credentials: "include", signal: controller.signal,
+          });
+          if (!resposta.ok) return { chave, liberada: false, coberta: false, autorizada: false, motivos: [] as string[] };
+          const dados = await resposta.json();
+          const elegibilidade = dados.elegibilidadeImpressao;
+          return {
+            chave,
+            liberada: Boolean(elegibilidade?.liberadoPorParcelamento),
+            coberta: Boolean(elegibilidade?.cobertoFinanceiramentePorParcelamento),
+            autorizada: Boolean(elegibilidade?.podeImprimir),
+            motivos: Array.isArray(elegibilidade?.motivos) ? elegibilidade.motivos as string[] : [],
+          };
+        } catch { return { chave, liberada: false, coberta: false, autorizada: false, motivos: [] as string[] }; }
+      }));
+      if (!cancelado) {
+        setGuiasComVoucherParcelado(Object.fromEntries(resultados.map((item) => [item.chave, item.liberada])));
+        setGuiasComCoberturaParcelada(Object.fromEntries(resultados.map((item) => [item.chave, item.coberta])));
+        setGuiasVoucherAutorizado(Object.fromEntries(resultados.map((item) => [item.chave, item.autorizada])));
+        setMotivosBloqueioVoucher(Object.fromEntries(resultados.map((item) => [item.chave, item.motivos])));
+        setConsultandoVoucherV122(false);
+      }
+    }
+    void consultar();
+    return () => { cancelado = true; controller.abort(); };
+  }, [assinaturaGuiasVoucherV12, revisaoVoucherV12]);
 
   const [pagamentosGuias, setPagamentosGuias] = useState<
   Record<string, number>
@@ -764,6 +851,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         const novasGuiasSalvas: Record<string, boolean> = {};
         const novasGuiasPagas: Record<string, boolean> = {};
         const novosGuiaIds: Record<string, number> = {};
+        const novasOrigensGuias: Record<number, number> = {};
         const novosDescontos: Record<string, number> = {};
         const novosPagamentos: Record<string, number> = {};
         const novosEstornos: Record<string, number> = {};
@@ -785,6 +873,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
           const horario = primeiroItem?.horarioAgendamento || "";
 
           const chave = [
+            `guia-${guia.id}`,
             guia.clinicaId,
             guia.unidadeClinicaId || 0,
             tipo,
@@ -806,6 +895,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
           );
 
           guia.itens.forEach((item) => {
+            novasOrigensGuias[item.procedimento.id] = guia.id;
             if (
               !procedimentosDoAtendimento.some(
                 (procedimento) => procedimento.id === item.procedimento.id
@@ -857,6 +947,7 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
         setGuiasSalvas(novasGuiasSalvas);
         setGuiasPagas(novasGuiasPagas);
         setGuiaIds(novosGuiaIds);
+        setGuiaOriginalPorProcedimento(novasOrigensGuias);
         setDescontosGuias(novosDescontos);
         setPagamentosGuias(novosPagamentos);
         setEstornosGuias(novosEstornos);
@@ -1089,6 +1180,12 @@ async function selecionarClinicaDoProcedimento(
 ) {
   const clinica = clinicas.find((item) => item.id === clinicaId);
   if (!clinica) return;
+  if (guiaOriginalPorProcedimento[procedimentoId]) {
+    if (clinicasSelecionadas[procedimentoId] !== clinicaId) {
+      alert("Este procedimento já pertence a uma guia salva. Na etapa Guias / Pagamento, utilize 'Trocar clínica/unidade desta guia' para preservar o voucher e os pagamentos.");
+    }
+    return;
+  }
 
   const precoBase = clinica.precos[procedimentoId];
   if (!precoBase) {
@@ -1130,6 +1227,12 @@ async function selecionarUnidadeDoProcedimento(
   unidadeId: number
 ) {
   try {
+    if (guiaOriginalPorProcedimento[procedimentoId]) {
+      if (unidadesSelecionadas[procedimentoId] !== unidadeId) {
+        alert("Para alterar a unidade de uma guia salva, utilize o botão de troca auditada em Guias / Pagamento.");
+      }
+      return;
+    }
     setCarregandoPrecoProcedimentoId(procedimentoId);
 
     const resposta = await fetch(
@@ -1176,6 +1279,18 @@ async function selecionarUnidadeDoProcedimento(
   } finally {
     setCarregandoPrecoProcedimentoId(null);
   }
+}
+
+// O agendamento da guia salva é comum aos seus itens; alterar um não divide o voucher.
+function atualizarCampoAgendamento<T>(atuais: Record<number, T>, procedimentoId: number, valor: T): Record<number, T> {
+  const proximo = { ...atuais, [procedimentoId]: valor };
+  const origem = guiaOriginalPorProcedimento[procedimentoId];
+  if (origem) {
+    for (const p of procedimentosSelecionados) {
+      if (guiaOriginalPorProcedimento[p.id] === origem) proximo[p.id] = valor;
+    }
+  }
+  return proximo;
 }
 
 async function aplicarConfiguracaoEmLote() {
@@ -1285,6 +1400,22 @@ async function aplicarConfiguracaoEmLote() {
       precosAplicados.set(procedimento.id, preco);
     }
 
+    const mudaGuiaSalva = [...idsAplicados].some((procedimentoId) =>
+      guiaOriginalPorProcedimento[procedimentoId] &&
+      (clinicasSelecionadas[procedimentoId] !== clinicaId ||
+       (unidadesSelecionadas[procedimentoId] || null) !== unidadeId)
+    );
+    if (mudaGuiaSalva) {
+      setMensagemConfiguracaoLote("Há guias já emitidas nesta seleção. Troque a clínica/unidade pelo fluxo auditado na etapa Guias / Pagamento.");
+      return;
+    }
+
+    const origensAplicadas = new Set([...idsAplicados].map(id => guiaOriginalPorProcedimento[id]).filter(Boolean));
+    if (procedimentosSelecionados.some(p => origensAplicadas.has(guiaOriginalPorProcedimento[p.id]) && !idsAplicados.has(p.id))) {
+      setMensagemConfiguracaoLote("A configuração dividiria uma guia salva. Reagende todos os procedimentos da mesma guia juntos.");
+      return;
+    }
+
     if (idsAplicados.size === 0) {
       setMensagemConfiguracaoLote(
         "Nenhum dos procedimentos selecionados está disponível nessa clínica/unidade."
@@ -1360,6 +1491,7 @@ async function aplicarConfiguracaoEmLote() {
     setProcedimentosSelecionados((atuais) =>
       atuais.map((procedimento) => {
         const preco = precosAplicados.get(procedimento.id);
+        if (guiaOriginalPorProcedimento[procedimento.id]) return procedimento;
 
         return preco
           ? {
@@ -1394,6 +1526,8 @@ const guias = useMemo(() => {
     string,
     {
       chave: string;
+      chaveFinanceira: string;
+      guiaIdOriginal: number | null;
       clinicaId: number;
       clinicaNome: string;
       unidadeClinicaId: number | null;
@@ -1432,17 +1566,25 @@ const guias = useMemo(() => {
     const data = datasAgendamento[id] || "";
     const horario = horariosAgendamento[id] || "";
 
+    // A data identifica o rascunho do agendamento, não o histórico financeiro.
+    const guiaIdOriginal = guiaOriginalPorProcedimento[id] || null;
     const chave = [
+      ...(guiaIdOriginal ? [`guia-${guiaIdOriginal}`] : []),
       clinicaId,
       unidadeClinicaId || 0,
       tipo,
       data,
       tipo === "horario" ? horario : "",
     ].join("-");
+    const chaveFinanceira = guiaIdOriginal
+      ? Object.keys(guiaIds).find((key) => guiaIds[key] === guiaIdOriginal) || chave
+      : chave;
 
     if (!grupos[chave]) {
       grupos[chave] = {
         chave,
+        chaveFinanceira,
+        guiaIdOriginal,
         clinicaId,
         clinicaNome: clinica.nome,
         unidadeClinicaId,
@@ -1466,6 +1608,8 @@ const guias = useMemo(() => {
   datasAgendamento,
   horariosAgendamento,
   clinicas,
+  guiaOriginalPorProcedimento,
+  guiaIds,
 ]);
 
 const etapaMaximaLiberada = useMemo(() => {
@@ -1576,7 +1720,7 @@ const etapaMaximaLiberada = useMemo(() => {
     const descontoManual =
       pacienteSelecionado.beneficioAtivo
         ? 0
-        : descontosGuias[guia.chave] || 0;
+        : (descontosGuias[guia.chave] ?? descontosGuias[guia.chaveFinanceira] ?? 0);
 
     const valorFinal = Math.max(
       subtotal - valorBeneficio - descontoManual,
@@ -1584,10 +1728,10 @@ const etapaMaximaLiberada = useMemo(() => {
     );
 
     const totalPago =
-      pagamentosGuias[guia.chave] || 0;
+      (pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0);
 
     const totalEstornado =
-      estornosGuias[guia.chave] || 0;
+      (estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0);
 
     const pagoLiquido = Math.max(
       totalPago - totalEstornado,
@@ -1596,7 +1740,7 @@ const etapaMaximaLiberada = useMemo(() => {
 
     return (
       !!guiasSalvas[guia.chave] &&
-      Math.abs(pagoLiquido - valorFinal) < 0.01
+      (Math.abs(pagoLiquido - valorFinal) < 0.01 || guiasComCoberturaParcelada[guia.chave])
     );
   });
 
@@ -1620,6 +1764,7 @@ const etapaMaximaLiberada = useMemo(() => {
   pagamentosGuias,
   estornosGuias,
   guiasSalvas,
+  guiasComCoberturaParcelada,
 ]);
 
 const contextoAprendizAtendimento = (() => {
@@ -1699,7 +1844,7 @@ const contextoAprendizAtendimento = (() => {
 
     const descontoManualInformado = pacienteSelecionado?.beneficioAtivo
       ? 0
-      : descontosGuias[guia.chave] || 0;
+      : (descontosGuias[guia.chave] ?? descontosGuias[guia.chaveFinanceira] ?? 0);
 
     const descontoManual = Math.min(
       descontoManualInformado,
@@ -1711,8 +1856,8 @@ const contextoAprendizAtendimento = (() => {
       0
     );
 
-    const totalPago = pagamentosGuias[guia.chave] || 0;
-    const totalEstornado = estornosGuias[guia.chave] || 0;
+    const totalPago = (pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0);
+    const totalEstornado = (estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0);
     const pagoLiquido = Math.max(totalPago - totalEstornado, 0);
     const saldo = Math.max(valorFinal - pagoLiquido, 0);
     const estornoNecessario = Math.max(pagoLiquido - valorFinal, 0);
@@ -1830,7 +1975,7 @@ const contextoAprendizAtendimento = (() => {
       );
     }
 
-    if (pacienteSelecionado.cadastroCompleto === false) {
+    if (!cadastroMinimoVoucherCompleto(pacienteSelecionado)) {
       return criar(
         "paciente-cadastro-incompleto",
         '[data-aprendiz="atendimento-paciente-editar"]',
@@ -2006,7 +2151,7 @@ const contextoAprendizAtendimento = (() => {
     );
   }
 
-  if (pacienteSelecionado?.cadastroCompleto === false) {
+  if (pacienteSelecionado && !cadastroMinimoVoucherCompleto(pacienteSelecionado)) {
     return criar(
       "revisao-cadastro-incompleto",
       '[data-aprendiz="atendimento-revisao-editar-paciente"]',
@@ -2034,6 +2179,11 @@ const contextoAprendizAtendimento = (() => {
       new Set(linhasDetalhamento(p.detalhamento).map(v => v.toLocaleUpperCase("pt-BR"))).size !== linhasDetalhamento(p.detalhamento).length
     ));
     if (incompleto) { alert(`Detalhamento inválido em ${incompleto.nome}.`); return; }
+    const origensParaSalvar = guias.map(g => g.guiaIdOriginal).filter(Boolean);
+    if (new Set(origensParaSalvar).size !== origensParaSalvar.length) {
+      alert("Uma guia salva não pode ser dividida pelo agendamento. Mantenha todos os seus procedimentos juntos.");
+      return;
+    }
     try {
       const guiasParaSalvar = guias.map((guia) => {
         const procedimentosAtivos = guia.procedimentos.filter(
@@ -2059,7 +2209,7 @@ const contextoAprendizAtendimento = (() => {
 
         const descontoManualInformado = pacienteSelecionado.beneficioAtivo
           ? 0
-          : descontosGuias[guia.chave] || 0;
+          : (descontosGuias[guia.chave] ?? descontosGuias[guia.chaveFinanceira] ?? 0);
 
         const descontoManual = Math.min(
           descontoManualInformado,
@@ -2071,10 +2221,10 @@ const contextoAprendizAtendimento = (() => {
         );
 
         const valorPago = arredondarCentavos(
-          pagamentosGuias[guia.chave] || 0
+          (pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0)
         );
         const valorEstornado = arredondarCentavos(
-          estornosGuias[guia.chave] || 0
+          (estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0)
         );
         const valorPagoLiquido = arredondarCentavos(
           Math.max(valorPago - valorEstornado, 0)
@@ -2098,6 +2248,7 @@ const contextoAprendizAtendimento = (() => {
 
         const guiaConsideradaSalva =
           !!guiasSalvas[guia.chave] ||
+          !!guiasSalvas[guia.chaveFinanceira] ||
           chaveGuiaParaSalvar === guia.chave;
 
         const guiaQuitada =
@@ -2134,6 +2285,7 @@ const contextoAprendizAtendimento = (() => {
           status = "CANCELADA";
         }
         return {
+          guiaId: guia.guiaIdOriginal || guiaIds[guia.chave] || null,
           clinicaId: guia.clinicaId,
           unidadeClinicaId: guia.unidadeClinicaId,
           status,
@@ -2185,13 +2337,16 @@ const contextoAprendizAtendimento = (() => {
       setAtendimentoPersistidoId(dados.id);
 
       const novosIds: Record<string, number> = {};
+      const novosDescontos: Record<string, number> = {};
+      const origensAposSalvar: Record<number, number> = {};
       const novasSalvas: Record<string, boolean> = {};
       const novosPagamentos: Record<string, number> = {};
       const novosEstornos: Record<string, number> = {};
       const novasPagas: Record<string, boolean> = {};
 
-      (dados.guias || []).forEach(
+      (dados.guias || []).filter((g: AtendimentoExistenteApi["guias"][number]) => g.status !== "CANCELADA").forEach(
         (guiaApi: AtendimentoExistenteApi["guias"][number]) => {
+          guiaApi.itens.forEach((item) => { origensAposSalvar[item.procedimento.id] = guiaApi.id; });
           const primeiroItem = guiaApi.itens[0];
 
           const tipo =
@@ -2209,6 +2364,7 @@ const contextoAprendizAtendimento = (() => {
             primeiroItem?.horarioAgendamento || "";
 
           const chave = [
+            `guia-${guiaApi.id}`,
             guiaApi.clinicaId,
             guiaApi.unidadeClinicaId || 0,
             tipo,
@@ -2217,6 +2373,7 @@ const contextoAprendizAtendimento = (() => {
           ].join("-");
 
           novosIds[chave] = guiaApi.id;
+          novosDescontos[chave] = Number(guiaApi.desconto || 0);
           novasSalvas[chave] =
             guiaApi.status !== "RASCUNHO";
           novasPagas[chave] =
@@ -2240,26 +2397,15 @@ const contextoAprendizAtendimento = (() => {
         }
       );
 
-      setGuiaIds((atuais) => ({
-        ...atuais,
-        ...novosIds,
-      }));
-      setGuiasSalvas((atuais) => ({
-        ...atuais,
-        ...novasSalvas,
-      }));
-      setGuiasPagas((atuais) => ({
-        ...atuais,
-        ...novasPagas,
-      }));
-      setPagamentosGuias((atuais) => ({
-        ...atuais,
-        ...novosPagamentos,
-      }));
-      setEstornosGuias((atuais) => ({
-        ...atuais,
-        ...novosEstornos,
-      }));
+      // Não manter chaves antigas vinculadas a agendamentos anteriores.
+      setGuiaIds(novosIds);
+      setGuiaOriginalPorProcedimento(origensAposSalvar);
+      setGuiasSalvas(novasSalvas);
+      setGuiasPagas(novasPagas);
+      setDescontosGuias(novosDescontos);
+      setPagamentosGuias(novosPagamentos);
+      setEstornosGuias(novosEstornos);
+      revalidarVoucherV122();
 
       localStorage.removeItem(
         "digna-conect-atendimento-rascunho"
@@ -2310,6 +2456,8 @@ const contextoAprendizAtendimento = (() => {
       setPacientes((atuais) =>
         atuais.map((paciente) => paciente.id === pacienteId ? atualizar(paciente) : paciente)
       );
+      // Cadastro editado em outra aba: reconsultar a autorização do voucher.
+      setRevisaoVoucherV12((atual) => atual + 1);
     } catch (erro) {
       console.error("Erro ao atualizar cadastro do paciente:", erro);
     } finally {
@@ -2511,7 +2659,8 @@ const contextoAprendizAtendimento = (() => {
   async function registrarPagamentoImediato(
     guiaChave: string,
     guiaId: number,
-    pagamentos: PartePagamentoMisto[]
+    pagamentos: PartePagamentoMisto[],
+    dataRecebimento: string
   ) {
     try {
       setProcessandoPagamento(true);
@@ -2524,6 +2673,7 @@ const contextoAprendizAtendimento = (() => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            dataRecebimento,
             pagamentos: pagamentos.map((pagamento) => ({
               valor: pagamento.valor,
               formaRecebimentoId: pagamento.formaRecebimentoId,
@@ -2561,6 +2711,8 @@ const contextoAprendizAtendimento = (() => {
         [guiaChave]:
           dados.financeiro?.status === "PAGA",
       }));
+
+      revalidarVoucherV122();
 
       return true;
     } catch (erro) {
@@ -2631,6 +2783,8 @@ const contextoAprendizAtendimento = (() => {
         [guiaChave]:
           dados.financeiro?.status === "PAGA",
       }));
+
+      revalidarVoucherV122();
 
       await carregarDocumentosFinanceiros();
 
@@ -3472,6 +3626,9 @@ const contextoAprendizAtendimento = (() => {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-xango-muted">
                   Agendamento
                 </p>
+                {guiaOriginalPorProcedimento[procedimento.id] && (
+                  <p className="mb-3 text-xs text-xango-muted">Alterações de agendamento são aplicadas a todos os procedimentos desta guia salva.</p>
+                )}
 
                 <div
                   data-aprendiz="atendimento-agendamento-tipos"
@@ -3481,10 +3638,7 @@ const contextoAprendizAtendimento = (() => {
                   <button
                     type="button"
                     onClick={() =>
-                      setTiposAgendamento((atuais) => ({
-                        ...atuais,
-                        [procedimento.id]: "horario",
-                      }))
+                      setTiposAgendamento((atuais) => atualizarCampoAgendamento(atuais, procedimento.id, "horario"))
                     }
                     className={`rounded-md border px-3 py-3 text-left text-sm transition ${
                       tiposAgendamento[procedimento.id] === "horario"
@@ -3502,10 +3656,7 @@ const contextoAprendizAtendimento = (() => {
                   <button
                     type="button"
                     onClick={() =>
-                      setTiposAgendamento((atuais) => ({
-                        ...atuais,
-                        [procedimento.id]: "aguardando",
-                      }))
+                      setTiposAgendamento((atuais) => atualizarCampoAgendamento(atuais, procedimento.id, "aguardando"))
                     }
                     className={`rounded-md border px-3 py-3 text-left text-sm transition ${
                       tiposAgendamento[procedimento.id] === "aguardando"
@@ -3523,10 +3674,7 @@ const contextoAprendizAtendimento = (() => {
                   <button
                     type="button"
                     onClick={() =>
-                      setTiposAgendamento((atuais) => ({
-                        ...atuais,
-                        [procedimento.id]: "ordem",
-                      }))
+                      setTiposAgendamento((atuais) => atualizarCampoAgendamento(atuais, procedimento.id, "ordem"))
                     }
                     className={`rounded-md border px-3 py-3 text-left text-sm transition ${
                       tiposAgendamento[procedimento.id] === "ordem"
@@ -3555,10 +3703,7 @@ const contextoAprendizAtendimento = (() => {
                         type="date"
                         value={datasAgendamento[procedimento.id] || ""}
                         onChange={(event) =>
-                          setDatasAgendamento((atuais) => ({
-                            ...atuais,
-                            [procedimento.id]: event.target.value,
-                          }))
+                          setDatasAgendamento((atuais) => atualizarCampoAgendamento(atuais, procedimento.id, event.target.value))
                         }
                         className="mt-2 w-full rounded-md border border-xango-border bg-white px-4 py-3 text-sm text-xango-text outline-none transition focus:border-xango-primary"
                       />
@@ -3576,10 +3721,7 @@ const contextoAprendizAtendimento = (() => {
                         type="time"
                         value={horariosAgendamento[procedimento.id] || ""}
                         onChange={(event) =>
-                          setHorariosAgendamento((atuais) => ({
-                            ...atuais,
-                            [procedimento.id]: event.target.value,
-                          }))
+                          setHorariosAgendamento((atuais) => atualizarCampoAgendamento(atuais, procedimento.id, event.target.value))
                         }
                         className="mt-2 w-full rounded-md border border-xango-border bg-white px-4 py-3 text-sm text-xango-text outline-none transition focus:border-xango-primary"
                       />
@@ -3601,10 +3743,7 @@ const contextoAprendizAtendimento = (() => {
                       type="date"
                       value={datasAgendamento[procedimento.id] || ""}
                       onChange={(event) =>
-                        setDatasAgendamento((atuais) => ({
-                          ...atuais,
-                          [procedimento.id]: event.target.value,
-                        }))
+                        setDatasAgendamento((atuais) => atualizarCampoAgendamento(atuais, procedimento.id, event.target.value))
                       }
                       className="mt-2 w-full rounded-md border border-xango-border bg-white px-4 py-3 text-sm text-xango-text outline-none transition focus:border-xango-primary"
                     />
@@ -3710,7 +3849,7 @@ const contextoAprendizAtendimento = (() => {
         const descontoManualInformado =
           pacienteSelecionado?.beneficioAtivo
             ? 0
-            : descontosGuias[guia.chave] || 0;
+            : (descontosGuias[guia.chave] ?? descontosGuias[guia.chaveFinanceira] ?? 0);
 
         const descontoManual = Math.min(
           descontoManualInformado,
@@ -3722,10 +3861,10 @@ const contextoAprendizAtendimento = (() => {
         );
 
         const valorPago = arredondarCentavos(
-          pagamentosGuias[guia.chave] || 0
+          (pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0)
         );
         const totalEstornado = arredondarCentavos(
-          estornosGuias[guia.chave] || 0
+          (estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0)
         );
 
         const valorPagoLiquido = arredondarCentavos(
@@ -3759,13 +3898,15 @@ const contextoAprendizAtendimento = (() => {
           saldoPendente === 0 &&
           !possuiEstornoPendente;
 
+        // A autorização definitiva pertence ao servidor (nome, nascimento, CPF e telefone).
         const podeImprimirGuia =
-          guiaQuitada &&
-          procedimentosAtivos.length > 0;
+          !!guiasSalvas[guia.chave] && !consultandoVoucherV122 && Boolean(guiasVoucherAutorizado[guia.chave]) &&
+          procedimentosAtivos.length > 0 && !possuiEstornoPendente &&
+          (saldoPendente === 0 || Boolean(guiasComCoberturaParcelada[guia.chave]));
 
         const statusGuia =
           !guiasSalvas[guia.chave]
-            ? "Não salva"
+            ? (guia.guiaIdOriginal && guia.chave !== guia.chaveFinanceira ? "Reagendamento pendente" : "Não salva")
             : todosProcedimentosCancelados && possuiEstornoPendente
               ? "Cancelada • estorno pendente"
               : cancelamentoLiquidado
@@ -3818,6 +3959,16 @@ const contextoAprendizAtendimento = (() => {
               >
                 {statusGuia}
               </span>
+              {guiaIds[guia.chave] && (
+                <TrocaClinicaGuiaV122
+                  guiaId={guiaIds[guia.chave]}
+                  clinicaAtualId={guia.clinicaId}
+                  unidadeAtualId={guia.unidadeClinicaId}
+                  clinicas={clinicas.map((c) => ({ id: c.id, nome: c.nome,
+                    unidades: c.unidades.map((u) => ({ id: u.id, nome: u.nome })) }))}
+                  onConcluido={() => window.location.reload()}
+                />
+              )}
             </div>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-xango-border pt-3">
               <div className="text-xs text-xango-muted">
@@ -4014,7 +4165,7 @@ const contextoAprendizAtendimento = (() => {
                   value={descontoManual}
                   disabled={
                     !!pacienteSelecionado?.beneficioAtivo ||
-                    guiasPagas[guia.chave]
+                    guiasPagas[guia.chaveFinanceira]
                   }
                   onChange={(event) => {
                     const valor = Number(event.target.value);
@@ -4068,7 +4219,7 @@ const contextoAprendizAtendimento = (() => {
               </div>
             </div>
 
-            {guiasSalvas[guia.chave] && (
+            {(guiasSalvas[guia.chave] || guia.guiaIdOriginal) && (
               <div className="mt-4 grid grid-cols-2 gap-3 border-t border-xango-border pt-4">
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide text-xango-muted">
@@ -4126,6 +4277,7 @@ const contextoAprendizAtendimento = (() => {
                 <button
                   type="button"
                   data-aprendiz="atendimento-guia-estorno"
+                  disabled={!guiasSalvas[guia.chave] || !guiaIds[guia.chave]}
                   onClick={() => {
                     setGuiaEstornoAberta(guia.chave);
                     setPagamentoEstornoId("");
@@ -4176,18 +4328,49 @@ const contextoAprendizAtendimento = (() => {
                   </p>
 
                   <p className="mt-1 text-xs text-xango-muted">
-                    {statusGuia === "Paga"
-                      ? "Pagamento confirmado. Guia liberada para impressão."
-                      : statusGuia === "Parcialmente paga"
-                        ? "A guia possui pagamento parcial e ainda tem saldo pendente."
-                        : statusGuia === "Estorno pendente"
-                          ? "Existe um estorno pendente que precisa ser concluído."
-                          : statusGuia === "Aguardando pagamento"
-                            ? "Guia salva e aguardando pagamento."
-                            : "A guia ainda não foi salva."}
+                    {possuiEstornoPendente
+                      ? "Existe um estorno pendente que precisa ser concluído."
+                      : podeImprimirGuia && guiasComVoucherParcelado[guia.chave]
+                        ? "Voucher autorizado por parcelamento. Recebimentos continuam pendentes até cada baixa manual."
+                        : statusGuia === "Paga"
+                          ? podeImprimirGuia
+                            ? "Pagamento confirmado. Guia liberada para impressão."
+                            : consultandoVoucherV122
+                              ? "Pagamento confirmado. Verificando autorização do voucher..."
+                              : "Pagamento confirmado. A autorização do voucher ainda não foi liberada."
+                          : statusGuia === "Parcialmente paga"
+                            ? "A guia possui pagamento parcial e ainda tem saldo pendente."
+                            : statusGuia === "Aguardando pagamento"
+                              ? "Guia salva e aguardando pagamento."
+                              : todosProcedimentosCancelados
+                                ? "Guia cancelada."
+                                : guia.guiaIdOriginal && guia.chave !== guia.chaveFinanceira
+                                  ? "Reagendamento pendente de salvamento. Pagamentos e voucher original preservados."
+                                  : "A guia ainda não foi salva."}
                   </p>
                 </div>
               </div>
+
+              {guiasSalvas[guia.chave] && !consultandoVoucherV122 && !podeImprimirGuia && (motivosBloqueioVoucher[guia.chave] || []).length > 0 && (
+                <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status">
+                  <p className="font-semibold">Voucher ainda não autorizado:</p>
+                  {motivosBloqueioVoucher[guia.chave].map((motivo) => (
+                    <p key={motivo} className="mt-1">{motivo}</p>
+                  ))}
+                  {(motivosBloqueioVoucher[guia.chave] || []).some((motivo) => motivo.includes("Cadastro do paciente incompleto")) && pacienteSelecionado && (
+                    <button type="button" onClick={() => editarCadastroPaciente(pacienteSelecionado.id)}
+                      className="mt-2 rounded-md border border-amber-500 bg-white px-3 py-2 font-semibold hover:bg-amber-100">
+                      Completar cadastro do paciente
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {guiasSalvas[guia.chave] && !consultandoVoucherV122 && !podeImprimirGuia &&
+                (motivosBloqueioVoucher[guia.chave] || []).length === 0 && (
+                  <button type="button" onClick={revalidarVoucherV122}
+                    className="mb-3 text-xs font-semibold text-xango-primary underline">Consultar autorização do voucher novamente</button>
+                )}
 
               <div className="flex flex-wrap gap-2">
                 {guiaIds[guia.chave] && guia.tipoAgendamento !== "aguardando" && (
@@ -4208,7 +4391,7 @@ const contextoAprendizAtendimento = (() => {
                   }}
                   className="rounded-md bg-xango-primary px-4 py-2 text-xs font-semibold text-white transition hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {guiaIds[guia.chave] ? "Salvar alterações" : "Salvar guia"}
+                  {guia.guiaIdOriginal || guiaIds[guia.chave] ? "Salvar alterações" : "Salvar guia"}
                 </button>
 
                 {procedimentosAtivos.length > 0 && (
@@ -4222,6 +4405,8 @@ const contextoAprendizAtendimento = (() => {
                     }
                     onClick={() => {
                       setGuiaPagamentoAberta(guia.chave);
+                      setDataRecebimentoPagamento(hojeRecebimentoSP());
+                      setModoParcelamentoManual(false);
                       setFormaRecebimentoPagamentoId("");
                       setContaFinanceiraPagamentoId("");
                       setValorRecebido("");
@@ -4355,10 +4540,11 @@ const contextoAprendizAtendimento = (() => {
 
         <button
           type="button"
-          disabled
-          className="rounded-md bg-xango-primary px-5 py-2.5 text-sm font-medium text-white opacity-40"
+          disabled={etapaMaximaLiberada < 4}
+          onClick={() => setEtapaAtual(4)}
+          className="rounded-md bg-xango-primary px-5 py-2.5 text-sm font-medium text-white transition enabled:hover:bg-xango-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Continuar
+          Continuar para revisão
         </button>
       </div>
     </div>
@@ -4465,37 +4651,16 @@ const contextoAprendizAtendimento = (() => {
           const descontoManual =
             pacienteSelecionado?.beneficioAtivo
               ? 0
-              : descontosGuias[guia.chave] || 0;
+              : (descontosGuias[guia.chave] ?? descontosGuias[guia.chaveFinanceira] ?? 0);
 
-          const valorFinal = Math.max(
-            subtotal - valorBeneficio - descontoManual,
-            0
-          );
-
-          const totalPago =
-            pagamentosGuias[guia.chave] || 0;
-
-          const totalEstornado =
-            estornosGuias[guia.chave] || 0;
-
-          const pagoLiquido = Math.max(
-            totalPago - totalEstornado,
-            0
-          );
-
-          const saldo = Math.max(
-            valorFinal - pagoLiquido,
-            0
-          );
-
-          const quitada =
-            procedimentosAtivos.length > 0 &&
-            saldo === 0 &&
-            pagoLiquido <= valorFinal;
-
-          const todosCancelados =
-            guia.procedimentos.length > 0 &&
-            procedimentosAtivos.length === 0;
+          const valorFinal = arredondarCentavos(Math.max(subtotal - valorBeneficio - descontoManual, 0));
+          const totalPago = arredondarCentavos((pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0));
+          const totalEstornado = arredondarCentavos((estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0));
+          const pagoLiquido = arredondarCentavos(Math.max(totalPago - totalEstornado, 0));
+          const saldo = arredondarCentavos(Math.max(valorFinal - pagoLiquido, 0));
+          const excedente = arredondarCentavos(Math.max(pagoLiquido - valorFinal, 0));
+          const quitada = procedimentosAtivos.length > 0 && saldo === 0 && excedente === 0;
+          const todosCancelados = guia.procedimentos.length > 0 && procedimentosAtivos.length === 0;
 
           return (
             <div
@@ -4521,7 +4686,7 @@ const contextoAprendizAtendimento = (() => {
 
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                    todosCancelados
+                    excedente > 0 || todosCancelados
                       ? "bg-red-100 text-red-700"
                       : quitada
                         ? "bg-emerald-100 text-emerald-800"
@@ -4530,9 +4695,11 @@ const contextoAprendizAtendimento = (() => {
                           : "bg-amber-100 text-amber-800"
                   }`}
                 >
-                  {todosCancelados
-                    ? "Cancelada"
-                    : quitada
+                  {excedente > 0
+                    ? (todosCancelados ? "Cancelada • estorno pendente" : "Estorno pendente")
+                    : todosCancelados
+                      ? "Cancelada"
+                      : quitada
                       ? "Paga"
                       : pagoLiquido > 0
                         ? "Pagamento parcial"
@@ -4690,6 +4857,11 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               </div>
 
+              {excedente > 0 && (
+                <p className="border-t border-red-200 bg-red-50 px-5 py-3 text-sm font-semibold text-red-700">
+                  Excedente a regularizar: {excedente.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}. Registre o estorno pelo financeiro.
+                </p>
+              )}
               {/* AÇÕES */}
               <div className="flex flex-wrap gap-2 border-t border-xango-border px-5 py-4">
                 <button
@@ -4708,7 +4880,9 @@ const contextoAprendizAtendimento = (() => {
                   Conferir financeiro
                 </button>
 
-                {quitada && guiaIds[guia.chave] && (
+                {!consultandoVoucherV122 && !todosCancelados && excedente === 0 &&
+                  (saldo === 0 || Boolean(guiasComCoberturaParcelada[guia.chave])) &&
+                  guiasVoucherAutorizado[guia.chave] && guiaIds[guia.chave] && (
                   <button
                     type="button"
                     onClick={() =>
@@ -4783,7 +4957,7 @@ const contextoAprendizAtendimento = (() => {
     <button
       type="button"
       aria-label="Fechar pagamento"
-      onClick={() => setGuiaPagamentoAberta(null)}
+      onClick={() => { setGuiaPagamentoAberta(null); setModoParcelamentoManual(false); }}
       className="fixed inset-0 z-40 bg-black/25"
     />
 
@@ -4825,7 +4999,7 @@ const contextoAprendizAtendimento = (() => {
         const desconto =
           pacienteSelecionado?.beneficioAtivo
             ? 0
-            : descontosGuias[guia.chave] || 0;
+            : (descontosGuias[guia.chave] ?? descontosGuias[guia.chaveFinanceira] ?? 0);
 
         const valorFinal = Math.max(
           subtotal - valorBeneficio - desconto,
@@ -4833,10 +5007,10 @@ const contextoAprendizAtendimento = (() => {
         );
 
         const jaPago =
-          pagamentosGuias[guia.chave] || 0;
+          (pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0);
 
         const totalEstornado =
-          estornosGuias[guia.chave] || 0;
+          (estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0);
 
         const pagoLiquido = Math.max(
           jaPago - totalEstornado,
@@ -4869,6 +5043,9 @@ const contextoAprendizAtendimento = (() => {
           preferenciasFinanceiras.formasRecebimento.filter(
             (item) =>
               item.ativo &&
+              item.forma !== "BOLETO" &&
+              item.forma !== "PIX_PARCELADO" &&
+              !(item.forma === "CARTAO_CREDITO" && /pix\s*parcelado/i.test(item.nome)) &&
               preferenciasFinanceiras.formasPagamentoHabilitadas.includes(
                 item.forma
               )
@@ -4934,7 +5111,7 @@ const contextoAprendizAtendimento = (() => {
 
               <button
                 type="button"
-                onClick={() => setGuiaPagamentoAberta(null)}
+                onClick={() => { setGuiaPagamentoAberta(null); setModoParcelamentoManual(false); }}
                 className="rounded-md border border-xango-border px-3 py-2 text-sm hover:bg-xango-background"
               >
                 Fechar
@@ -4942,6 +5119,18 @@ const contextoAprendizAtendimento = (() => {
             </div>
 
             <div className="mt-6 space-y-5">
+              <label className="block rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-sm font-medium text-xango-text">
+                Data efetiva do recebimento
+                <input
+                  type="date"
+                  required
+                  max={hojeRecebimentoSP()}
+                  value={dataRecebimentoPagamento}
+                  onChange={(e) => setDataRecebimentoPagamento(e.target.value)}
+                  className="mt-2 block w-full rounded-lg border border-xango-border bg-white px-3 py-2 text-sm"
+                />
+                <span className="mt-2 block text-xs font-normal text-xango-muted">Use o dia em que o dinheiro realmente entrou. O registro conserva a data e o usuário do lançamento separadamente. O caixa físico exige o dia do caixa aberto.</span>
+              </label>
               <div className="rounded-md border border-xango-border bg-xango-background p-4">
                 <div className="flex justify-between text-sm">
                   <span className="text-xango-muted">Valor da guia</span>
@@ -4977,7 +5166,27 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               </div>
 
-              {pagamentosMistos.length > 0 && (
+              <ParcelamentosGuiaV12
+                guiaId={guiaIds[guia.chave]}
+                onModoAlterado={(ativo) => {
+                  setModoParcelamentoManual(ativo);
+                  if (ativo) {
+                    setPagamentosMistos([]);
+                    setFormaRecebimentoPagamentoId("");
+                    setContaFinanceiraPagamentoId("");
+                    setValorRecebido("");
+                  }
+                }}
+                onPlanoCriado={revalidarVoucherV122}
+                onBaixa={(financeiro) => {
+                  revalidarVoucherV122();
+                  setPagamentosGuias(atuais => ({ ...atuais, [guia.chave]: Number(financeiro.totalPago || 0) }));
+                  setEstornosGuias(atuais => ({ ...atuais, [guia.chave]: Number(financeiro.totalEstornado || 0) }));
+                  setGuiasPagas(atuais => ({ ...atuais, [guia.chave]: financeiro.status === "PAGA" }));
+                }}
+              />
+
+              {!modoParcelamentoManual && pagamentosMistos.length > 0 && (
                 <div className="rounded-lg border border-xango-border">
                   <div className="border-b border-xango-border px-4 py-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
@@ -5087,7 +5296,7 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               )}
 
-              {saldoDepoisDoMisto > 0.009 && (
+              {!modoParcelamentoManual && saldoDepoisDoMisto > 0.009 && (
                 <div className="space-y-4 rounded-lg border border-xango-border p-4">
                   <div data-aprendiz="atendimento-pagamento-forma">
                     <label className="text-xs font-semibold uppercase tracking-wide text-xango-muted">
@@ -5335,11 +5544,13 @@ const contextoAprendizAtendimento = (() => {
                 </div>
               )}
 
-              <button
+              {!modoParcelamentoManual && <button
                 type="button"
                 data-aprendiz="atendimento-pagamento-confirmar"
                 disabled={
                   pagamentosMistos.length === 0 ||
+                  !dataRecebimentoPagamento ||
+                  dataRecebimentoPagamento > hojeRecebimentoSP() ||
                   processandoPagamento
                 }
                 onClick={async () => {
@@ -5357,7 +5568,8 @@ const contextoAprendizAtendimento = (() => {
                     await registrarPagamentoImediato(
                       guia.chave,
                       guiaId,
-                      pagamentosMistos
+                      pagamentosMistos,
+                      dataRecebimentoPagamento
                     );
 
                   if (!sucesso) {
@@ -5375,9 +5587,9 @@ const contextoAprendizAtendimento = (() => {
                   : pagamentosMistos.length > 1
                     ? `Confirmar pagamento misto (${pagamentosMistos.length} formas)`
                     : "Confirmar pagamento"}
-              </button>
+              </button>}
 
-              {pagamentosMistos.length > 0 && saldoDepoisDoMisto > 0.009 && (
+              {!modoParcelamentoManual && pagamentosMistos.length > 0 && saldoDepoisDoMisto > 0.009 && (
                 <p className="text-center text-xs text-xango-muted">
                   Este registro será um pagamento parcial. Permanecerá saldo de{" "}
                   <strong>
@@ -5419,10 +5631,10 @@ const contextoAprendizAtendimento = (() => {
         }
            
         const valorPago =
-          pagamentosGuias[guia.chave] || 0;
+          (pagamentosGuias[guia.chave] ?? pagamentosGuias[guia.chaveFinanceira] ?? 0);
 
         const totalEstornado =
-          estornosGuias[guia.chave] || 0;
+          (estornosGuias[guia.chave] ?? estornosGuias[guia.chaveFinanceira] ?? 0);
 
         const valorDisponivelEstorno = Math.max(
           valorPago - totalEstornado,
