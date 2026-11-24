@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { PedidosMedicosConsultaV13 } from "@/components/PedidosMedicosConsultaV13";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
 
@@ -805,6 +806,8 @@ const atendimentosFiltrados = useMemo(() => {
                 </div>
                 </details>
               </div>
+
+              <PedidosMedicosConsultaV13 key={selecionado.id} atendimentoId={selecionado.id} />
 
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-xango-muted">

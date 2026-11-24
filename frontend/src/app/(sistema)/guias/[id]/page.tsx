@@ -263,7 +263,7 @@ export default function GuiaDetalhePage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-xango-primary">Guia / voucher</p>
           <div className="mt-1 flex flex-wrap items-center gap-3">
             <h2 className="text-2xl font-semibold text-xango-text">{guia.codigoPublico || `Guia #${guia.id}`}</h2>
-            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(guia.status)}`}>{statusLabel(guia.status)}</span>
+            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(guia.status)}`}>{guia.status === "PAGA" && numero(guia.valorFinal) === 0 && guia.pagamentos.length === 0 ? "Sem cobrança" : statusLabel(guia.status)}</span>
           </div>
           <p className="mt-1 text-sm text-xango-muted">{guia.atendimento.codigoPublico || `Atendimento #${guia.atendimento.id}`}</p>
         </div>
