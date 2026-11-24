@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { PedidosMedicosConsultaV13 } from "@/components/PedidosMedicosConsultaV13";
 import {
   CalendarDays,
   CheckCircle2,
@@ -515,7 +516,7 @@ export default function GuiasPage() {
 
                   <td className="px-3 py-4 align-top">
                     <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClass(guia.status)}`}>
-                      {statusLabel(guia.status)}
+                      {guia.status === "PAGA" && guia.financeiro.valorFinal === 0 && guia.financeiro.pagoLiquido === 0 ? "Sem cobrança" : statusLabel(guia.status)}
                     </span>
                     {guia.procedimentos.some((item) => item.status === "REALIZADO") && (
                       <p className="mt-2 flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
@@ -594,7 +595,7 @@ export default function GuiasPage() {
 
               <div className="flex items-center gap-2">
                 <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusClass(selecionada.status)}`}>
-                  {statusLabel(selecionada.status)}
+                  {selecionada.status === "PAGA" && selecionada.financeiro.valorFinal === 0 && selecionada.financeiro.pagoLiquido === 0 ? "Sem cobrança" : statusLabel(selecionada.status)}
                 </span>
                 <button
                   type="button"
@@ -669,6 +670,8 @@ export default function GuiasPage() {
                 </div>
                 <p className="mt-2 text-sm text-xango-text">{resumoAgendamento(selecionada)}</p>
               </div>
+
+              <PedidosMedicosConsultaV13 key={selecionada.atendimento.id} atendimentoId={selecionada.atendimento.id} />
 
               {/* Confirmação por procedimento, sem vínculo com quitação do paciente. */}
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">

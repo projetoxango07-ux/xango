@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import BuscaMaePaciente from "./BuscaMaePaciente";
 import ParcelamentosGuiaV12 from "./ParcelamentosGuiaV12";
 import TrocaClinicaGuiaV122 from "./TrocaClinicaGuiaV122";
+import { PedidosMedicosAtendimentoV13, enviarPedidoMedicoV13 } from "./PedidosMedicosV13";
 import {
   useRouter,
   useSearchParams,
@@ -427,6 +428,13 @@ function normalizarBuscaProcedimento(valor: string) {
 
 // Cadastro 100% e um indicador de preenchimento, nao requisito para o voucher.
 // A autorizacao final e verificada no backend.
+function nascimentoPtBr(valor?: string | null) {
+  if (!valor) return "Não informado";
+  const iso = valor.slice(0, 10);
+  const partes = iso.split("-");
+  return partes.length === 3 ? `${partes[2]}/${partes[1]}/${partes[0]}` : "Não informado";
+}
+
 function cadastroMinimoVoucherCompleto(paciente: Paciente) {
   return Boolean(
     paciente.nome?.trim() &&
@@ -470,6 +478,9 @@ export default function AtendimentoForm({ atendimentoId }: AtendimentoFormProps)
   const [atendimentoPersistidoId, setAtendimentoPersistidoId] = useState<
     number | undefined
   >(atendimentoId);
+  const [pedidosMedicosPendentes, setPedidosMedicosPendentes] = useState<File[]>([]);
+  const [refreshPedidosMedicos, setRefreshPedidosMedicos] = useState(0);
+  const [mensagemCopiaPaciente, setMensagemCopiaPaciente] = useState("");
   const [documentosFinanceirosAbertos, setDocumentosFinanceirosAbertos] =
     useState(false);
   const [documentosFinanceiros, setDocumentosFinanceiros] =
@@ -2335,6 +2346,19 @@ const contextoAprendizAtendimento = (() => {
       }
 
       setAtendimentoPersistidoId(dados.id);
+      let falhasAnexos = 0;
+
+      // Enviar arquivos preparados antes de salvar, sem perder a associação com o paciente.
+      if (pedidosMedicosPendentes.length > 0) {
+        const falhas: File[] = [];
+        for (const arquivo of pedidosMedicosPendentes) {
+          try { await enviarPedidoMedicoV13(Number(dados.id), arquivo); }
+          catch (e) { console.error("Falha no envio de um pedido médico:", e); falhas.push(arquivo); }
+        }
+        setPedidosMedicosPendentes(falhas);
+        setRefreshPedidosMedicos(v => v + 1);
+        falhasAnexos = falhas.length;
+      }
 
       const novosIds: Record<string, number> = {};
       const novosDescontos: Record<string, number> = {};
@@ -2411,6 +2435,10 @@ const contextoAprendizAtendimento = (() => {
         "digna-conect-atendimento-rascunho"
       );
 
+      if (falhasAnexos) {
+        alert(`Atendimento salvo, mas ${falhasAnexos} pedido(s) médico(s) não puderam ser anexados. Tente novamente antes de sair.`);
+        return dados;
+      }
       if (permanecerNaTela) {
         return dados;
       }
@@ -2880,6 +2908,11 @@ const contextoAprendizAtendimento = (() => {
         </div>
       </div>
 
+      {pacienteSelecionado && <PedidosMedicosAtendimentoV13 key={pacienteSelecionado.id}
+        atendimentoId={atendimentoPersistidoId}
+        pendentes={pedidosMedicosPendentes} onPendentesChange={setPedidosMedicosPendentes}
+        refresh={refreshPedidosMedicos} />}
+
       {etapaAtual === 0 && (
       <section
         data-aprendiz="atendimento-paciente"
@@ -2927,6 +2960,7 @@ const contextoAprendizAtendimento = (() => {
                     key={paciente.id}
                     type="button"
                     onClick={() => {
+                      if (pacienteSelecionado?.id !== paciente.id) setPedidosMedicosPendentes([]);
                       setPacienteSelecionado(paciente);
                     }}
                     className={`flex w-full items-center justify-between border-b border-xango-border px-4 py-3 text-left last:border-b-0 ${
@@ -3012,8 +3046,18 @@ const contextoAprendizAtendimento = (() => {
                 <p className="text-xs font-semibold uppercase tracking-wide text-xango-muted">Paciente selecionado</p>
                 <p className="mt-2 font-semibold text-xango-text">{pacienteSelecionado.nome}</p>
                 <p className="mt-1 text-sm text-xango-muted">
-                  {formatarCpf(pacienteSelecionado.cpf) || "CPF não informado"} • {formatarTelefone(pacienteSelecionado.telefone) || "Telefone não informado"}
+                  CPF: {formatarCpf(pacienteSelecionado.cpf) || "Não informado"} • {formatarTelefone(pacienteSelecionado.telefone) || "Telefone não informado"}
                 </p>
+                <p className="mt-1 text-sm text-xango-muted">Nascimento: {nascimentoPtBr(pacienteSelecionado.dataNascimento)}</p>
+                <button type="button" className="mt-2 rounded-md border border-xango-border px-3 py-2 text-xs font-semibold text-xango-primary"
+                  onClick={async () => {
+                    const texto = `Paciente: ${pacienteSelecionado.nome}\nCPF: ${formatarCpf(pacienteSelecionado.cpf) || "Não informado"}\nNascimento: ${nascimentoPtBr(pacienteSelecionado.dataNascimento)}\nTelefone: ${formatarTelefone(pacienteSelecionado.telefone) || "Não informado"}`;
+                    try { await navigator.clipboard.writeText(texto); setMensagemCopiaPaciente("Dados copiados para encaminhamento à clínica."); }
+                    catch { setMensagemCopiaPaciente("Não foi possível copiar. Verifique a permissão do navegador."); }
+                  }}>
+                  Copiar dados do paciente
+                </button>
+                {mensagemCopiaPaciente && <p role="status" className="mt-2 text-xs text-xango-muted">{mensagemCopiaPaciente}</p>}
                 <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
                   pacienteSelecionado.cadastroCompleto ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-800"
                 }`}>
@@ -3914,7 +3958,7 @@ const contextoAprendizAtendimento = (() => {
                 : possuiEstornoPendente
                   ? "Estorno pendente"
                   : guiaQuitada
-                    ? "Paga"
+                    ? (valorFinal === 0 && valorPagoLiquido === 0 ? "Sem cobrança" : "Paga")
                     : valorPagoLiquido > 0
                       ? "Parcialmente paga"
                       : todosProcedimentosCancelados
@@ -4332,6 +4376,9 @@ const contextoAprendizAtendimento = (() => {
                       ? "Existe um estorno pendente que precisa ser concluído."
                       : podeImprimirGuia && guiasComVoucherParcelado[guia.chave]
                         ? "Voucher autorizado por parcelamento. Recebimentos continuam pendentes até cada baixa manual."
+                        : statusGuia === "Sem cobrança"
+                          ? podeImprimirGuia ? "Guia sem cobrança, liberada para voucher. Nenhum recebimento será registrado; o repasse depende da realização."
+                            : "Guia sem cobrança. Verifique os dados cadastrais para liberar o voucher."
                         : statusGuia === "Paga"
                           ? podeImprimirGuia
                             ? "Pagamento confirmado. Guia liberada para impressão."
@@ -4700,7 +4747,7 @@ const contextoAprendizAtendimento = (() => {
                     : todosCancelados
                       ? "Cancelada"
                       : quitada
-                      ? "Paga"
+                      ? (valorFinal === 0 && pagoLiquido === 0 ? "Sem cobrança" : "Paga")
                       : pagoLiquido > 0
                         ? "Pagamento parcial"
                         : "Aguardando pagamento"}

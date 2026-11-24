@@ -11,6 +11,8 @@ import { registrarRotasTerceirizacao } from "./terceirizacao.js";
 import { criarRotasFinanceiroV12 } from "./financeiro-v12.js";
 import { criarRotasParcelamentosV12, temCoberturaParcelamentoV12 } from "./parcelamentos-v12.js";
 import { criarRotasTrocaClinicaV122 } from "./troca-clinica-v122.js";
+import { registrarRotasPedidosMedicosV13 } from "./pedidos-medicos-v13.js";
+import { semCobrancaLiquidada } from "./regras-gratuidade-v13.js";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL!,
@@ -656,6 +658,10 @@ function permissaoDaRota(req: express.Request): Permissao | null {
     if (req.method === "POST") return "orcamentos.criar";
     return "orcamentos.editar";
   }
+  // Pedidos anexados a um atendimento existente exigem permissão de edição.
+  if (/^\/atendimentos\/\d+\/pedidos-medicos(?:\/|$)/.test(caminho)) {
+    return leitura ? "atendimentos.visualizar" : "atendimentos.editar";
+  }
   if (caminho.startsWith("/atendimentos")) {
     if (leitura) return "atendimentos.visualizar";
     if (req.method === "POST") return "atendimentos.criar";
@@ -892,6 +898,12 @@ registrarRotasTerceirizacao(app, prisma, (req, permissao) => {
   return !!usuario && possuiPermissao(usuario, permissao as Permissao);
 });
 app.use(autorizarRota);
+
+// V1.3: rotas privadas de pedidos médicos, registradas APÓS autenticação/autorização.
+registrarRotasPedidosMedicosV13(app, prisma, {
+  organizacaoId: organizacaoAtualId,
+  usuarioId: usuarioAtualId,
+});
 
 // V1.2.2: alteração integral de clínica, com simulação, auditoria e travas financeiras.
 app.use("/guias", criarRotasTrocaClinicaV122(prisma, {
@@ -2561,7 +2573,7 @@ function calcularStatusGuia(
     return "ESTORNO_PENDENTE";
   }
 
-  if (valorFinal > 0 && pagoLiquido >= valorFinal) {
+  if (semCobrancaLiquidada(valorFinal, pagoLiquido) || (valorFinal > 0 && pagoLiquido >= valorFinal)) {
     return "PAGA";
   }
 
@@ -2858,7 +2870,7 @@ async function recalcularStatusFinanceiroGuia(tx: any, guiaId: number) {
       status = "CANCELADA";
     } else if (pagoLiquido > valorFinal) {
       status = "ESTORNO_PENDENTE";
-    } else if (valorFinal > 0 && pagoLiquido >= valorFinal) {
+    } else if (semCobrancaLiquidada(valorFinal, pagoLiquido) || (valorFinal > 0 && pagoLiquido >= valorFinal)) {
       status = "PAGA";
     } else if (pagoLiquido > 0) {
       status = "PARCIALMENTE_PAGA";
@@ -6614,7 +6626,7 @@ function validarValoresExcel(valorPaciente: number | null, valorRepasse: number 
       valorPaciente < 0 || valorRepasse < 0 || valorPaciente > 99999999.99 || valorRepasse > 99999999.99) {
     throw new ErroImportacaoExcel(400, `Linha ${linha}: informe preços completos, não negativos e de até R$ 99.999.999,99.`);
   }
-  if (valorRepasse > valorPaciente) throw new ErroImportacaoExcel(400, `Linha ${linha}: o repasse é maior que o valor do paciente.`);
+  if (valorPaciente > 0 && valorRepasse > valorPaciente) throw new ErroImportacaoExcel(400, `Linha ${linha}: o repasse é maior que o valor do paciente.`);
   return { valorPaciente: arredondarDinheiro(valorPaciente), valorRepasse: arredondarDinheiro(valorRepasse) };
 }
 
@@ -7459,7 +7471,7 @@ app.post(
         if (
           valorPaciente !== null &&
           valorRepasse !== null &&
-          valorRepasse > valorPaciente
+          valorPaciente > 0 && valorRepasse > valorPaciente
         ) {
           erros.push(
             "Repasse é maior que o valor do paciente."

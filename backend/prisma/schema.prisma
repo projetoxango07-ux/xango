@@ -273,6 +273,7 @@ model Organizacao {
   faturasSistema FaturaSistema[]
   repasses       Repasse[]
   relatosProblema RelatoProblema[]
+  pedidosMedicos PedidoMedico[]
   operadorasPagamento OperadoraPagamento[]
   contasFinanceiras      ContaFinanceira[]
   formasRecebimento      FormaRecebimento[]
@@ -335,6 +336,7 @@ model Usuario {
   terceirizacaoProducoesCriadas TerceirizacaoProducao[] @relation("V3ProducaoCriadaPor")
   id              Int            @id @default(autoincrement())
 
+  pedidosMedicosEnviados PedidoMedico[] @relation("PedidoMedicoEnviadoPor")
   codigoPublico   String?        @unique
   nome            String
   email           String?        @unique
@@ -471,6 +473,7 @@ model Paciente {
   beneficioAtivo       Boolean   @default(false)
 
   atendimentos         Atendimento[]
+  pedidosMedicos        PedidoMedico[]
   orcamentos           Orcamento[]
   importacoesLegadas    PacienteImportacaoLegada[]
 
@@ -759,9 +762,34 @@ model Atendimento {
   motivoCancelamento  String?
 
   guias               Guia[]
+  pedidosMedicos       PedidoMedico[]
 
   criadoEm         DateTime          @default(now())
   atualizadoEm     DateTime          @updatedAt
+}
+
+// V1.3: documento médico privado e opcional, disponível a qualquer momento.
+// Os bytes ficam no PostgreSQL: são preservados pelo backup do banco.
+model PedidoMedico {
+  id             Int          @id @default(autoincrement())
+  organizacaoId  Int
+  organizacao    Organizacao  @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  pacienteId     Int
+  paciente       Paciente     @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  atendimentoId  Int
+  atendimento    Atendimento @relation(fields: [atendimentoId], references: [id], onDelete: Restrict)
+  nomeOriginal   String       @db.VarChar(180)
+  mimeType       String       @db.VarChar(40)
+  tamanhoBytes   Int
+  sha256         String       @db.VarChar(64)
+  conteudo       Bytes        @db.ByteA
+  enviadoPorId   Int?
+  enviadoPor     Usuario?     @relation("PedidoMedicoEnviadoPor", fields: [enviadoPorId], references: [id], onDelete: SetNull)
+  criadoEm       DateTime     @default(now())
+  removidoEm     DateTime?
+  removidoPorId  Int?
+  @@index([organizacaoId, pacienteId, criadoEm])
+  @@index([organizacaoId, atendimentoId, criadoEm])
 }
 
 model ModeloOrcamento {
