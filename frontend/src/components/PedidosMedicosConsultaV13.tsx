@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Download, Eye, FileText } from "lucide-react";
+import { enviarPedidoMedicoV13 } from "./PedidosMedicosV13";
 
 const API = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://localhost:3333";
 
@@ -42,13 +43,17 @@ function dataEnvio(valor: string): string {
 /**
  * Consulta apenas os documentos do atendimento informado.
  * Sem URLs públicas: cada arquivo é obtido com cookie de sessão e autorização da API.
- * Não oferece inclusão ou exclusão de arquivos no painel lateral.
+ * Permite inclusão nos painéis laterais, sem exclusão de arquivos.
  */
 export function PedidosMedicosConsultaV13({ atendimentoId }: { atendimentoId: number }) {
   const [documentos, setDocumentos] = useState<Documento[]>([]);
   const [estado, setEstado] = useState<Estado>("carregando");
   const [erro, setErro] = useState("");
   const [abrindoId, setAbrindoId] = useState<number | null>(null);
+  const [enviando, setEnviando] = useState(false);
+  const [atualizacao, setAtualizacao] = useState(0);
+  const [erroEnvio, setErroEnvio] = useState("");
+  const [avisoEnvio, setAvisoEnvio] = useState("");
 
   useEffect(() => {
     const controle = new AbortController();
@@ -77,8 +82,33 @@ export function PedidosMedicosConsultaV13({ atendimentoId }: { atendimentoId: nu
         setEstado("erro");
       });
     return () => controle.abort();
-  }, [atendimentoId]);
+  }, [atendimentoId, atualizacao]);
 
+  async function anexarArquivos(arquivos: File[]) {
+    if (arquivos.length === 0 || enviando) return;
+    setEnviando(true);
+    setErroEnvio("");
+    setAvisoEnvio("");
+    let sucesso = 0;
+    const falhas: string[] = [];
+    try {
+      for (const arquivo of arquivos) {
+        try {
+          await enviarPedidoMedicoV13(atendimentoId, arquivo);
+          sucesso++;
+        } catch (e) {
+          falhas.push(`${arquivo.name}: ${e instanceof Error ? e.message : "Falha ao anexar."}`);
+        }
+      }
+      if (sucesso > 0) {
+        setAvisoEnvio(`${sucesso} pedido(s) médico(s) anexado(s) com sucesso.`);
+        setAtualizacao((atual) => atual + 1);
+      }
+      if (falhas.length > 0) setErroEnvio(falhas.join(" | "));
+    } finally {
+      setEnviando(false);
+    }
+  }
   async function abrirArquivo(documento: Documento, visualizar: boolean) {
     if (abrindoId !== null) return;
     setAbrindoId(documento.id);
@@ -131,6 +161,24 @@ export function PedidosMedicosConsultaV13({ atendimentoId }: { atendimentoId: nu
         )}
       </div>
 
+      <label className={`mt-3 flex cursor-pointer items-center justify-center rounded-md border border-xango-primary px-3 py-2 text-sm font-semibold text-xango-primary ${enviando ? "cursor-wait opacity-50" : "hover:bg-xango-background"}`}>
+        {enviando ? "Enviando pedido..." : "+ Anexar pedido médico"}
+        <input
+          type="file"
+          multiple
+          accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+          aria-label="Anexar pedido médico"
+          className="sr-only"
+          disabled={enviando}
+          onChange={(evento) => {
+            const arquivos = Array.from(evento.currentTarget.files ?? []);
+            evento.currentTarget.value = "";
+            void anexarArquivos(arquivos);
+          }}
+        />
+      </label>
+      {avisoEnvio && <p role="status" className="mt-2 text-xs text-emerald-800">{avisoEnvio}</p>}
+      {erroEnvio && <p role="alert" className="mt-2 text-xs text-red-700">{erroEnvio}</p>}
       {estado === "carregando" && <p role="status" className="mt-3 text-xs text-xango-muted">Carregando pedidos médicos...</p>}
       {estado === "erro" && <p role="alert" className="mt-3 text-xs text-red-700">{erro}</p>}
       {estado === "pronto" && documentos.length === 0 && (
